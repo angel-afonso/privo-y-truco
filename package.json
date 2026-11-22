@@ -1,0 +1,28 @@
+{
+  "name": "truco-venezolano-pixi",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bunx --bun vite",
+    "build": "bunx tsc --noEmit && bunx --bun vite build",
+    "preview": "bunx --bun vite preview",
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bun test",
+    "supabase:login": "supabase login",
+    "supabase:link": "supabase link --project-ref wdkjsgpluzhhqpnrskqx",
+    "supabase:db:push": "supabase db push",
+    "supabase:functions:deploy": "supabase functions deploy truco-game --project-ref wdkjsgpluzhhqpnrskqx --no-verify-jwt",
+    "supabase:deploy": "supabase db push && supabase functions deploy truco-game --project-ref wdkjsgpluzhhqpnrskqx --no-verify-jwt"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.119.2",
+    "pixi.js": "^8.9.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.5",
+    "supabase": "^3.2.0",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
+  }
+}
