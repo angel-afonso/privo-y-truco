@@ -1,3 +1,4 @@
+import type { RoomAction } from "./rematch";
 import { envidoLabel, envidoResponseLabel, GameState, PlayerAction, trucoCallLabel, TrucoLevel } from "../engine/types";
 
 // La vista puede mover la carta propia antes de que el servidor o anfitrión resuelva la baza.
@@ -20,7 +21,7 @@ export function previewPlayerAction(state: GameState, action: PlayerAction): Gam
   };
 }
 
-export function pendingActionLabel(action: PlayerAction, state: GameState, nextLevel?: TrucoLevel): string {
+export function pendingActionLabel(action: RoomAction, state: GameState, nextLevel?: TrucoLevel): string {
   switch (action.type) {
     case "PLAY_CARD": return action.burned ? "Quemando carta…" : "Jugando carta…";
     case "CALL_TRUCO": return trucoCallLabel(nextLevel ?? 1, state.phase === "AWAITING_TRUCO") + "…";
@@ -37,6 +38,7 @@ export function pendingActionLabel(action: PlayerAction, state: GameState, nextL
       contraflor: "Con flor envido…", contraflor_resto: "Con flor envido la falta…",
     }[action.choice];
     case "IRSE_AL_MAZO": return "Me voy…";
+    case "CONFIRM_REMATCH": return "Confirmando…";
     case "NEXT_HAND": return "Repartiendo…";
   }
 }

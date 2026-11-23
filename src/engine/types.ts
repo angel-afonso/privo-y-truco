@@ -178,6 +178,7 @@ export interface HandSummary {
 }
 
 export interface GameState {
+  rematch?: { matchId: number; players: PlayerId[]; confirmed: PlayerId[] };
   config: GameConfig;
   seats: PlayerId[];
   phase: GamePhase;

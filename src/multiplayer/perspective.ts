@@ -318,6 +318,11 @@ export function projectStateForViewer(state: GameState, viewerSeat: PlayerId): G
     initialHands: projectSeatRecordForViewer(state.initialHands, viewerSeat, seats),
     hands: projectSeatRecordForViewer(state.hands, viewerSeat, seats),
     tricks: projectedTricks,
+    rematch: state.rematch ? {
+      matchId: state.rematch.matchId,
+      players: state.rematch.players.map(p => mapSeatToViewer(p, viewerSeat, seats)),
+      confirmed: state.rematch.confirmed.map(p => mapSeatToViewer(p, viewerSeat, seats)),
+    } : undefined,
     prive: state.prive ? {
       ...state.prive,
       asker: mapSeatToViewer(state.prive.asker, viewerSeat, seats),

@@ -6,7 +6,6 @@ import {
   GameState,
   getPlayerTeam,
   getSeatsForMode,
-  PlayerAction,
   PlayerId,
   TeamId,
 } from "../engine/types";
@@ -28,6 +27,7 @@ import {
   saveHostMatchSnapshot,
 } from "./sessionStore";
 
+import type { RoomAction } from "./rematch";
 import { RealtimeInvites, redeemRealtimeInvite } from "./realtimeInvites";
 
 import { CHAT_LIMIT, chatText, type ChatMessage, type ChatSnapshot } from "./chat";
@@ -81,7 +81,7 @@ export interface RoomClientCallbacks {
   onMembersChange: (members: RoomMember[]) => void;
   onConfigChange: (config: GameConfig) => void;
   onSafeViewSync: (payload: SafeViewerSyncPayload) => void;
-  onRemoteAction: (seat: PlayerId, action: PlayerAction) => boolean;
+  onRemoteAction: (seat: PlayerId, action: RoomAction) => boolean;
   onActionRejected: (actionId: string) => void;
   onChatChange: (room: string, messages: ChatMessage[], initial: boolean) => void;
   onTeamWhisper: (payload: TeamWhisperPayload) => void;
@@ -550,8 +550,8 @@ export class TrucoRoomClient {
       const sender = this.members.find((m) => m.clientId === payload.clientId);
       if (channel !== this.channel || !sender || sender.seat !== payload.seat) return;
       const stale = payload.expectedVersion !== undefined && payload.expectedVersion !== this.stateVersion;
-      if (stale ||
-          !this.callbacks.onRemoteAction(payload.seat as PlayerId, payload.action as PlayerAction)) {
+      if ((stale && payload.action.type !== "CONFIRM_REMATCH") ||
+          !this.callbacks.onRemoteAction(payload.seat as PlayerId, payload.action as RoomAction)) {
         void this.sendBroadcast(`action_rejected:${sender.clientId}`, { actionId: payload.actionId });
       }
     });
@@ -865,15 +865,25 @@ export class TrucoRoomClient {
     else void this.sendBroadcast("request_sync", { clientId: this.clientId });
   }
 
-  public async sendPlayerAction(action: PlayerAction, actionId: string, expectedVersion: number): Promise<boolean> {
+  public async sendPlayerAction(action: RoomAction, actionId: string, expectedVersion: number): Promise<boolean> {
     if (!this.mySeat || !this.channel) return false;
     if (this.backendMode === "server") {
       const channel = this.channel;
-      const res = await this.invokeServer({ op: "action", roomCode: this.roomCode, action, expectedVersion });
-      if (channel !== this.channel || !res?.ok || !res.viewState) return false;
-      this.applyServerResponse(res);
-      void this.sendBroadcast("server_ping", { version: res.version });
-      return true;
+      // Dos confirmaciones de la misma partida pueden partir de la misma versión.
+      const attempts = action.type === "CONFIRM_REMATCH" ? getSeatsForMode(this.config.mode).length : 1;
+      for (let i = 0; i < attempts && channel === this.channel; i++) {
+        const res = await this.invokeServer({ op: "action", roomCode: this.roomCode, action, expectedVersion });
+        if (channel !== this.channel) return false;
+        if (res?.ok && res.viewState) {
+          this.applyServerResponse(res);
+          void this.sendBroadcast("server_ping", { version: res.version });
+          return true;
+        }
+        if (res?.httpStatus !== 409 || i + 1 === attempts) return false;
+        await this.refreshServerView();
+        expectedVersion = this.stateVersion;
+      }
+      return false;
     }
 
     return this.sendBroadcast("player_action", { clientId: this.clientId, seat: this.mySeat, action, actionId, expectedVersion });

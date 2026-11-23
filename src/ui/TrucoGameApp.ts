@@ -33,7 +33,6 @@ import {
   getPlayerLabel,
   getPlayerTeam,
   getTeamLabel,
-  PlayerAction,
   PlayerId,
   TRUCO_LEVEL_NAMES,
 } from "../engine/types";
@@ -59,7 +58,7 @@ import { soundFX } from "./sound";
 import { FONT_DISPLAY, FONT_UI, getFeltGrainTexture, PALETTE } from "./theme";
 import { Easing, TweenManager } from "./tween";
 import { pendingActionLabel, previewPlayerAction } from "../multiplayer/optimisticAction";
-import { formatOnlineSummaryText, isHiddenCardId } from "../multiplayer/perspective";
+import { formatOnlineSummaryText, isHiddenCardId, mapSeatToViewer } from "../multiplayer/perspective";
 import {
   SafeViewerSyncPayload,
   TeamWhisperPayload,
@@ -69,6 +68,7 @@ import { PersistedHostSnapshot } from "../multiplayer/sessionStore";
 import { StakeBoard } from "./stakeBoard";
 import { tableChoices, tableStake } from "./tableBids";
 import { createRulesDialog } from "./rulesDialog";
+import { confirmRematch, startRoomMatch, type RoomAction } from "../multiplayer/rematch";
 import { HandResult, type RevealedHand } from "./handResult";
 import { RoomChat } from "./roomChat";
 import { RoomDirectory } from "./roomDirectory";
@@ -181,7 +181,7 @@ export class TrucoGameApp {
   private hostEngine: TrucoEngine | null = null;
   private isOnlineMatch = false;
   private confirmedView: SafeViewerSyncPayload | null = null;
-  private pendingAction: { id: string; label: string; timer: ReturnType<typeof setTimeout> } | null = null;
+  private pendingAction: { id: string; label: string; rematchId?: number; timer: ReturnType<typeof setTimeout> } | null = null;
   private actionSequence = 0;
   private onlineHumanSeats = new Set<PlayerId>();
   private onlineOfflineSeats = new Set<PlayerId>();
@@ -199,8 +199,9 @@ export class TrucoGameApp {
         soundFX.playCardSlide();
         this.dispatchPlayer({ type: "NEXT_HAND" });
       } else if (phase === "MATCH_OVER") {
-        if (!this.isOnlineMatch) this.startMatch();
-        else if (this.roomClient.isHost) void this.startOnlineMatchAsHost();
+        if (this.isOnlineMatch) {
+          this.dispatchPlayer({ type: "CONFIRM_REMATCH", matchId: this.engine.getState().rematch?.matchId ?? 0 });
+        } else if (!this.roomClient.roomCode) this.startMatch();
       }
     }, () => this.showMenu());
     soundFX.enableOnInteraction();
@@ -905,6 +906,7 @@ export class TrucoGameApp {
       },
       onMembersChange: () => {
         this.syncLobbySnapshot();
+        if (this.isOnlineMatch && this.engine.getState().phase === "MATCH_OVER") this.updateSummaryOverlay();
         if (this.isOnlineMatch && this.roomClient.backendMode === "realtime" && this.roomClient.isHost) {
           this.broadcastAndApplyHostState(false);
         }
@@ -1064,7 +1066,7 @@ export class TrucoGameApp {
   }
 
   private async startOnlineMatchAsHost(): Promise<void> {
-    if (!this.roomClient.isHost || !this.roomClient.isConnected()) return;
+    if (this.isOnlineMatch || !this.roomClient.isHost || !this.roomClient.isConnected()) return;
 
     if (this.roomClient.backendMode === "server") {
       if (!await this.roomClient.startServerMatch()) {
@@ -1078,7 +1080,7 @@ export class TrucoGameApp {
     this.onlineCanonicalSeatClientIds = seatClientIds;
     this.onlineCanonicalHumanSeats = new Set(humanSeats);
     this.hostEngine = new TrucoEngine(this.roomClient.config);
-    this.hostEngine.startNewMatch(this.roomClient.config, "player");
+    startRoomMatch(this.hostEngine, humanSeats, this.roomClient.stateVersion + 1);
     this.isOnlineMatch = true;
     this.mpLobby.close();
 
@@ -1126,8 +1128,11 @@ export class TrucoGameApp {
       (!before || getActiveActor(before) !== "player" || before.phase !== next.phase ||
         before.handNumber !== next.handNumber || before.trickIndex !== next.trickIndex);
     soundFX.playOnlineUpdate(before, next, turnBegan);
-    this.clearPendingAction();
-    const isFreshMatch = !this.isOnlineMatch || this.inMenu;
+    if (this.pendingAction?.rematchId === undefined || next.phase !== "MATCH_OVER" ||
+        next.rematch?.confirmed.includes("player")) this.clearPendingAction();
+    const isFreshMatch = !this.isOnlineMatch || this.inMenu ||
+      (before?.phase === "MATCH_OVER" && next.phase !== "MATCH_OVER") ||
+      (before?.rematch && next.rematch && before.rematch.matchId !== next.rematch.matchId);
 
     this.isOnlineMatch = true;
     this.inMenu = false;
@@ -1158,10 +1163,17 @@ export class TrucoGameApp {
     }
   }
 
-  private handleRemotePlayerAction(canonicalSeat: PlayerId, action: PlayerAction): boolean {
+  private handleRemotePlayerAction(canonicalSeat: PlayerId, action: RoomAction): boolean {
     if (!this.isOnlineMatch || !this.roomClient.isHost || !this.hostEngine) return false;
     const s = this.hostEngine.getState();
 
+    if (action.type === "CONFIRM_REMATCH") {
+      const players = [...this.onlineCanonicalHumanSeats];
+      const online = players.filter(seat => this.roomClient.isSeatOnline(seat, this.onlineCanonicalSeatClientIds));
+      if (!confirmRematch(this.hostEngine, canonicalSeat, action.matchId, players, online)) return false;
+      this.broadcastAndApplyHostState();
+      return true;
+    }
     const before = s.lastEvent?.id;
     // Permitir que cualquier jugador inicie la siguiente mano al cerrar la mano
     if (action.type === "NEXT_HAND" && s.phase === "HAND_OVER") {
@@ -1331,25 +1343,26 @@ export class TrucoGameApp {
     this.roomClient.requestCurrentView();
   }
 
-  private submitOnlineAction(action: PlayerAction): void {
+  private submitOnlineAction(action: RoomAction): void {
     const base = this.confirmedView;
     if (!base || this.pendingAction) return;
     const id = `${this.roomClient.clientId}-${Date.now()}-${++this.actionSequence}`;
     const label = pendingActionLabel(action, base.viewState, this.engine.getLegalActions("player").nextTrucoLevel);
-    this.pendingAction = { id, label, timer: setTimeout(() => this.recoverPendingAction(id), 5000) };
-    this.engine.loadExternalState(previewPlayerAction(base.viewState, action));
+    this.pendingAction = { id, label, rematchId: action.type === "CONFIRM_REMATCH" ? action.matchId : undefined,
+      timer: setTimeout(() => this.recoverPendingAction(id), 5000) };
+    if (action.type !== "CONFIRM_REMATCH") this.engine.loadExternalState(previewPlayerAction(base.viewState, action));
     const sent = this.roomClient.sendPlayerAction(action, id, base.version);
     if (action.type === "PLAY_CARD") this.tableCall.visible = this.tableCaller.visible = false;
     this.positionAllCards(false);
     this.updateTurnIndicator();
     this.rebuildActionBar();
-    if (action.type === "NEXT_HAND") this.updateSummaryOverlay();
+    if (action.type === "NEXT_HAND" || action.type === "CONFIRM_REMATCH") this.updateSummaryOverlay();
     void sent.then((ok) => {
       if (!ok) this.recoverPendingAction(id);
     });
   }
 
-  private dispatchPlayer(action: PlayerAction): void {
+  private dispatchPlayer(action: RoomAction): void {
     if (this.inMenu || this.isDealing || this.pendingAction) return;
     this.burnMode = false;
     this.partnerCommDrawer.visible = false;
@@ -1363,6 +1376,7 @@ export class TrucoGameApp {
       return;
     }
 
+    if (action.type === "CONFIRM_REMATCH") return;
     this.engine.dispatch("player", action);
     this.syncFromState(false);
   }
@@ -1471,6 +1485,8 @@ export class TrucoGameApp {
   private syncFromState(forceRebuildCards: boolean): void {
     const s = this.engine.getState();
     const { cx, cy } = this.getArenaMetrics();
+
+    const previousEventId = this.lastEventId;
 
     // 1) Audio, globos de canto y destellos
     if (s.lastEvent && s.lastEvent.id !== this.lastEventId) {
@@ -1661,7 +1677,9 @@ export class TrucoGameApp {
     this.syncAutoPartnerCallout();
     this.positionAllCards(false);
     this.rebuildActionBar();
-    this.updateSummaryOverlay();
+    const endedOnCard = (s.phase === "HAND_OVER" || s.phase === "MATCH_OVER") &&
+      s.log.some(ev => ev.id > previousEventId && (ev.type === "play_card" || ev.type === "burn_card"));
+    this.updateSummaryOverlay(endedOnCard);
 
     // 4) Turno de bot si corresponde
     this.scheduleBotIfNeeded();
@@ -3023,7 +3041,7 @@ export class TrucoGameApp {
     }
   }
 
-  private updateSummaryOverlay(): void {
+  private updateSummaryOverlay(previewLastCard = false): void {
     const s = this.engine.getState();
     const matchOver = s.phase === "MATCH_OVER";
     if (this.inMenu || (!matchOver && s.phase !== "HAND_OVER")) {
@@ -3048,15 +3066,37 @@ export class TrucoGameApp {
         ? TRUCO_LEVEL_NAMES[s.truco.level]
         : localize(summary.reason);
     }
-    const canRestart = !this.isOnlineMatch || this.roomClient.isHost;
-    const action = matchOver
-      ? (canRestart ? "Jugar de nuevo" : "Esperando al anfitrión")
-      : this.pendingAction?.label ?? "Siguiente mano";
+    let action = matchOver ? "Sí, jugar" : "Siguiente mano";
+    let enabled = !this.pendingAction;
+    let prompt = matchOver ? "¿Jugar otra partida contra la CPU?" : undefined;
+    const roomResult = matchOver && this.isOnlineMatch;
+    if (roomResult) {
+      const players = s.rematch?.players ?? [...this.onlineHumanSeats];
+      const confirmed = s.rematch?.confirmed ?? [];
+      const online = this.roomClient.members.flatMap(member => member.seat && member.online !== false && this.roomClient.mySeat
+        ? [mapSeatToViewer(member.seat, this.roomClient.mySeat, s.seats)] : []);
+      const missing = players.find(seat => !online.includes(seat));
+      prompt = missing ? "Falta un jugador de esta partida. La revancha esperará a que vuelva."
+        : `¿Otra partida en esta sala? · ${confirmed.length}/${players.length} confirmados`;
+      if (confirmed.includes("player")) action = "Ya confirmaste";
+      enabled = enabled && online.includes("player") && players.includes("player") && !confirmed.includes("player") &&
+        (!missing || confirmed.length + 1 < players.length);
+    }
+    action = this.pendingAction?.label ?? action;
+    const lastTrick = [...s.tricks].reverse().find(trick => Object.keys(trick.played).length > 0);
+    const last = lastTrick && s.seats.flatMap(seat => {
+      const play = lastTrick.played[seat];
+      return play ? [{ seat, ...play }] : [];
+    }).sort((a, b) => b.order - a.order)[0];
+    const lastPlay = last && `${this.seatLabel(last.seat)} · ${last.burned || isHiddenCardId(last.card.id) ? "Carta boca abajo" : getCardName(last.card, s.vira)}`;
     this.summaryOverlay.show({
+      lastPlay,
       hand: s.handNumber,
       target: s.config.targetScore,
       title: `${winner} la ${matchOver ? "partida" : "mano"}`,
       matchOver,
+      roomResult,
+      prompt,
       scores: [
         { label: getTeamLabel("nosotros", s.config.mode), value: s.scores.nosotros },
         { label: rival, value: s.scores.ellos },
@@ -3066,7 +3106,7 @@ export class TrucoGameApp {
       notes,
       reveals: this.revealedResultHands(s),
       vira: s.vira,
-    }, action, matchOver ? canRestart : !this.pendingAction, cards => this.drawRevealedCards(cards, s.vira));
+    }, action, enabled, cards => this.drawRevealedCards(cards, s.vira), previewLastCard);
   }
 
   private drawTableAndArena(): void {

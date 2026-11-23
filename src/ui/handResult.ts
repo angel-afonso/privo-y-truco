@@ -12,6 +12,9 @@ interface ResultSheet {
   target: number;
   title: string;
   matchOver: boolean;
+  roomResult: boolean;
+  prompt?: string;
+  lastPlay?: string;
   scores: { label: string; value: number }[];
   notes: string[];
   reason: string;
@@ -23,9 +26,12 @@ interface ResultSheet {
 export class HandResult {
   private root = document.createElement("section");
   private content = document.createElement("div");
+  private prompt = document.createElement("p");
   private primary = document.createElement("button");
   private menu = document.createElement("button");
   private current = "";
+  private returnButton = document.createElement("button");
+  private revealTimer?: ReturnType<typeof setTimeout>;
 
   constructor(parent: HTMLElement, onContinue: () => void, onMenu: () => void) {
     this.root.className = "hand-result";
@@ -35,11 +41,20 @@ export class HandResult {
     const actions = document.createElement("footer");
     this.primary.type = this.menu.type = "button";
     this.primary.onclick = onContinue;
-    this.menu.textContent = "Menú";
     this.menu.onclick = onMenu;
     actions.append(this.menu, this.primary);
-    this.root.append(this.content, actions);
-    parent.append(this.root);
+    this.prompt.className = "hr-rematch";
+    this.prompt.setAttribute("role", "status");
+    this.root.append(this.content, this.prompt, actions);
+    this.returnButton.className = "hand-result-return";
+    this.returnButton.type = "button";
+    this.returnButton.textContent = "Ver resultado";
+    this.returnButton.hidden = true;
+    this.returnButton.onclick = () => {
+      this.showResult();
+      this.primary.disabled ? this.menu.focus() : this.primary.focus();
+    };
+    parent.append(this.root, this.returnButton);
   }
 
   centerOn(x: number, y: number): void {
@@ -48,14 +63,29 @@ export class HandResult {
   }
 
   hide(): void {
-    if (this.root.hidden) return;
+    clearTimeout(this.revealTimer);
+    this.returnButton.hidden = true;
     this.root.hidden = true;
+    if (!this.current) return;
     this.content.replaceChildren();
     this.current = "";
   }
 
-  show(sheet: ResultSheet, action: string, enabled: boolean, draw: (cards: Card[]) => HTMLCanvasElement): void {
-    const key = JSON.stringify(sheet);
+  private showResult(): void {
+    clearTimeout(this.revealTimer);
+    this.returnButton.hidden = true;
+    this.root.hidden = false;
+  }
+
+  private showTable(): void {
+    this.root.hidden = true;
+    this.returnButton.hidden = false;
+  }
+
+  show(sheet: ResultSheet, action: string, enabled: boolean, draw: (cards: Card[]) => HTMLCanvasElement, previewLastCard: boolean): void {
+    const firstShow = !this.current;
+    const { prompt, ...result } = sheet;
+    const key = JSON.stringify(result);
     if (key !== this.current) {
       const el = (tag: string, text: string) => {
         const node = document.createElement(tag);
@@ -75,6 +105,21 @@ export class HandResult {
         score.append(pair);
       }
       this.content.replaceChildren(meta, heading, score);
+      if (sheet.lastPlay) {
+        const last = document.createElement("div");
+        last.className = "hr-last-play";
+        const detail = document.createElement("div");
+        detail.append(el("small", "Última carta"), el("span", sheet.lastPlay));
+        const review = document.createElement("button");
+        review.type = "button";
+        review.textContent = "Ver mesa";
+        review.onclick = () => {
+          this.showTable();
+          this.returnButton.focus({ preventScroll: true });
+        };
+        last.append(detail, review);
+        this.content.append(last);
+      }
       for (const note of sheet.notes) this.content.append(el("p", note));
       if (sheet.reason) {
         const detail = document.createElement("p");
@@ -99,9 +144,19 @@ export class HandResult {
       this.current = key;
       this.content.scrollTop = 0;
     }
+    this.prompt.hidden = !prompt;
+    if (this.prompt.textContent !== (prompt ?? "")) this.prompt.textContent = prompt ?? "";
+    this.menu.textContent = sheet.roomResult ? "Salir de la sala" : "Menú";
     this.menu.hidden = !sheet.matchOver;
     this.primary.textContent = action;
     this.primary.disabled = !enabled;
-    this.root.hidden = false;
+    if (firstShow) {
+      if (previewLastCard && sheet.lastPlay) {
+        this.showTable();
+        this.revealTimer = setTimeout(() => this.showResult(), 1500);
+      } else {
+        this.showResult();
+      }
+    }
   }
 }

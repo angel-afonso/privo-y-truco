@@ -2,6 +2,7 @@
 // Desplegar con: supabase functions deploy truco-game --no-verify-jwt
 
 import { createClient } from "@supabase/supabase-js";
+import { confirmRematch, startRoomMatch, type RoomAction } from "../../../src/multiplayer/rematch.ts";
 import { decideBotAction } from "../../../src/engine/ai.ts";
 import { getPartnerSignal } from "../../../src/engine/evaluator.ts";
 import { TrucoEngine } from "../../../src/engine/gameEngine.ts";
@@ -10,7 +11,6 @@ import {
   GameState,
   getActiveActor,
   getSeatsForMode,
-  PlayerAction,
   PlayerId,
 } from "../../../src/engine/types.ts";
 import {
@@ -349,6 +349,7 @@ Deno.serve(async (req) => {
 
     // 5) ACTUALIZAR CONFIGURACIÓN (SOLO HOST EN LOBBY)
     if (op === "update_config") {
+      if (room.status !== "lobby") return jsonResponse({ ok: false, error: "La partida ya comenzó." }, 409);
       if (!caller.is_host) {
         return jsonResponse({ ok: false, error: "Solo el anfitrión cambia las reglas." }, 403);
       }
@@ -383,22 +384,9 @@ Deno.serve(async (req) => {
       if (!caller.is_host) {
         return jsonResponse({ ok: false, error: "Solo el anfitrión inicia la partida." }, 403);
       }
-      const engine = new TrucoEngine(room.config);
-      engine.startNewMatch(room.config, "player");
-      room.canonical_state = engine.getState();
-      room.status = "playing";
-      room.version += 1;
-
-      await db
-        .from("truco_rooms")
-        .update({
-          status: room.status,
-          canonical_state: room.canonical_state,
-          version: room.version,
-        })
-        .eq("code", roomCode);
-
-      return jsonResponse(buildClientPayload(room, players, caller));
+      if (room.status !== "lobby") return jsonResponse({ ok: false, error: "La mesa ya inició la partida." }, 409);
+      const seats = players.flatMap(p => p.seat ? [p.seat] : []);
+      return await saveMove(room, startRoomMatch(new TrucoEngine(room.config), seats, room.version + 1));
     }
 
     if ((op === "action" || op === "bot_step") && body.expectedVersion !== undefined &&
@@ -425,10 +413,19 @@ Deno.serve(async (req) => {
       if (!room.canonical_state || !caller.seat) {
         return jsonResponse({ ok: false, error: "No hay partida activa." }, 409);
       }
-      const action = body.action as PlayerAction;
+      const action = body.action as RoomAction;
       const engine = new TrucoEngine(room.config);
       engine.loadExternalState(room.canonical_state);
 
+      if (action.type === "CONFIRM_REMATCH") {
+        const seats = players.flatMap(p => p.seat ? [p.seat] : []);
+        const online = players.filter(p => p.client_id === clientId ||
+          Date.now() - Date.parse(p.last_seen) < DISCONNECT_BOT_TAKEOVER_MS).flatMap(p => p.seat ? [p.seat] : []);
+        if (!confirmRematch(engine, caller.seat, action.matchId, seats, online)) {
+          return jsonResponse({ ok: false, error: "La revancha requiere a los jugadores de la misma mesa." }, 409);
+        }
+        return await saveMove(room, engine.getState());
+      }
       const previousEvent = room.canonical_state.lastEvent?.id;
       if (action.type === "NEXT_HAND" && engine.getState().phase === "HAND_OVER") {
         engine.dispatch("player", action);
