@@ -6,6 +6,37 @@ import { cantos, cantoTakes, cantoAudioPath, eventCanto, nextCantoTake } from ".
 
 afterEach(() => mock.restore());
 
+test("El envite querido se concede con «Son buenas» al comparar los tantos, incluso si decide la partida", () => {
+  for (const call of ["envido", "envido_cinco", "falta_envido"] as const) {
+    const engine = new TrucoEngine({ withFlor: false });
+    const s = engine.startNewMatch();
+    engine.dispatch("player", { type: "CALL_ENVIDO", call });
+    engine.dispatch("cpu", { type: "RESPOND_ENVIDO", accept: true });
+    expect(s.log.map(eventCanto)).not.toContain("son-buenas");
+    const before = buildSafeViewerState(s, "cpu");
+    engine.dispatch("player", { type: "IRSE_AL_MAZO" });
+    const concessions = s.log.filter(event => eventCanto(event) === "son-buenas");
+    expect(concessions.map(event => event.actor)).toEqual([s.envido.winnerTeam === "nosotros" ? "cpu" : "player"]);
+    if (call === "falta_envido") expect(s.phase).toBe("MATCH_OVER");
+    const after = buildSafeViewerState(s, "cpu");
+    const voice = spyOn(soundFX, "playCanto").mockImplementation(() => {});
+    soundFX.playOnlineUpdate(before, after, false);
+    soundFX.playOnlineUpdate(after, after, false);
+    expect(voice.mock.calls.flat()).toEqual(["me-voy", "son-buenas"]);
+    voice.mockRestore();
+  }
+});
+
+test("El prive usa la misma voz para cualquier tanto y preserva el canto de truco", () => {
+  const event = { id: 1, actor: "player", type: "response", text: "" } as const;
+  for (const value of [0, 5, 31, 37]) {
+    expect(eventCanto({ ...event, bubble: `Privo ${value}` })).toBe("privo");
+  }
+  expect(eventCanto({ ...event, type: "call", bubble: "¿Cuánto privas?" })).toBe("cuanto-privas");
+  expect(eventCanto({ ...event, type: "call", bubble: "¡PRIVO Y TRUCO!" })).toBe("privo-y-truco");
+  expect(eventCanto({ ...event, bubble: "Son buenas" })).toBe("son-buenas");
+});
+
 test("La subida dice «quiero y» solo al responder directamente al truco", () => {
   const raises = [
     ["retruco-solo", "quiero-y-retruco"],

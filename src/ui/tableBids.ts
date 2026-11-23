@@ -1,4 +1,4 @@
-import { calculateFaltaEnvidoPoints, getTrucoAcceptPoints, getTrucoRejectPoints } from "../engine/evaluator";
+import { calculateEnvidoPoints, calculateFaltaEnvidoPoints, getTrucoAcceptPoints, getTrucoRejectPoints } from "../engine/evaluator";
 import { TrucoEngine } from "../engine/gameEngine";
 import { envidoLabel, envidoResponseLabel, PlayerAction, TRUCO_LEVEL_NAMES, trucoCallLabel } from "../engine/types";
 
@@ -9,6 +9,14 @@ function piedras(n: number): string {
 export function tableStake(engine: TrucoEngine) {
   const s = engine.getState();
   const base = getTrucoAcceptPoints(s.truco.level, s.scores, s.config.targetScore);
+  if (s.phase === "AWAITING_PRIVE" && s.prive) {
+    const declared = s.prive.declaredPoints;
+    return {
+      name: "Prive", value: 1, status: "En juego",
+      detail: declared !== undefined ? `Privo ${declared}` :
+        s.prive.next === "ASK_PRIVE" ? "Falta una piedra" : "¿Cuánto privas?",
+    };
+  }
   const settlement: string[] = [];
   if (s.envido.pendingSettlement && s.envido.stakedPoints !== undefined) {
     settlement.push(`Envido al cierre · ${piedras(s.envido.stakedPoints)}`);
@@ -55,6 +63,24 @@ export function tableChoices(engine: TrucoEngine, burnMode: boolean): TableChoic
   const choices: TableChoice[] = [];
   const add = (label: string, tone: TableChoice["tone"], action: TableChoice["action"], detail?: string) =>
     choices.push({ label, tone, action, detail });
+  if (legal.priveAction && s.prive) {
+    const value = calculateEnvidoPoints(s.initialHands.player ?? [], s.vira);
+    let label: string;
+    switch (legal.priveAction) {
+      case "ASK_PRIVE": label = "¿Cuánto privas?"; break;
+      case "DECLARE_PRIVE": label = s.config.mode === "1v1" ? `Privo ${value}` : "Cantar el prive"; break;
+      case "ANSWER_PRIVE": {
+        const declared = s.prive.declaredPoints!;
+        const wins = value > declared || (value === declared && s.mano === "player");
+        if (s.config.mode === "2v2") label = "Responder al prive";
+        else if (!wins) label = "Son buenas";
+        else label = s.scores.nosotros === s.config.targetScore - 1 ? `Privo ${value}` : "Privo y truco";
+        break;
+      }
+    }
+    add(label, "lead", { type: legal.priveAction });
+    return choices;
+  }
   const stake = tableStake(engine);
   if (legal.canRespondTruco && s.truco.pendingLevel) {
     add("Quiero", "lead", { type: "RESPOND_TRUCO", accept: true }, piedras(stake.value));

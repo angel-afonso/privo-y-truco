@@ -19,6 +19,7 @@ import {
   GameConfig,
   GameEvent,
   GameState,
+  getActiveActor,
   getOppositeTeam,
   getPlayerLabel,
   getPlayerTeam,
@@ -26,6 +27,7 @@ import {
   getTeamLabel,
   PlayerAction,
   PlayerId,
+  PriveAction,
   TeamId,
   TrickWinner,
   TRUCO_LEVEL_NAMES,
@@ -34,6 +36,7 @@ import {
 } from "./types.ts";
 
 export interface LegalActions {
+  priveAction?: PriveAction;
   canPlayCard: boolean;
   canBurnCard: boolean;
   canCallALey: boolean;
@@ -332,6 +335,10 @@ export class TrucoEngine {
       return empty;
     }
 
+    if (s.phase === "AWAITING_PRIVE") {
+      return actor === getActiveActor(s) ? { ...empty, priveAction: s.prive?.next } : empty;
+    }
+
     const actorTeam = getPlayerTeam(actor);
 
     // 1) AWAITING_FLOR
@@ -493,6 +500,12 @@ export class TrucoEngine {
     const legal = this.getLegalActions(actor);
 
     switch (action.type) {
+      case "ASK_PRIVE":
+      case "DECLARE_PRIVE":
+      case "ANSWER_PRIVE":
+        if (action.type === legal.priveAction) this.handlePrive(actor, action.type);
+        return this.state;
+
       case "NEXT_HAND":
         if (!legal.canNextHand) return this.state;
         this.startNextHand();
@@ -542,6 +555,58 @@ export class TrucoEngine {
         if (!legal.canIrseAlMazo) return this.state;
         this.handleIrseAlMazo(actor);
         return this.state;
+    }
+  }
+
+  private startPriveIfNeeded(): void {
+    const s = this.state;
+    s.prive = undefined;
+    const lastStone = s.config.targetScore - 1;
+    const manoTeam = getPlayerTeam(s.mano);
+    const other = this.getNextSeat(s.mano);
+    const declarer = s.scores[manoTeam] === lastStone ? s.mano : other;
+    if (s.scores[getPlayerTeam(declarer)] !== lastStone) return;
+    s.prive = { declarer, asker: declarer === s.mano ? other : s.mano, next: "ASK_PRIVE" };
+    s.phase = "AWAITING_PRIVE";
+  }
+
+  private winsEnvite(first: { points: number; player: PlayerId }, second: { points: number; player: PlayerId }): boolean {
+    if (first.points !== second.points) return first.points > second.points;
+    const { mano, seats } = this.state;
+    return getSeatDistanceFromMano(first.player, mano, seats) < getSeatDistanceFromMano(second.player, mano, seats);
+  }
+
+  private handlePrive(actor: PlayerId, action: PriveAction): void {
+    const s = this.state;
+    const prive = s.prive!;
+    if (action === "ASK_PRIVE") {
+      prive.next = "DECLARE_PRIVE";
+      this.emit(actor, "call", `${this.actorLabel(actor)} pregunta «¿Cuánto privas?»`, "¿Cuánto privas?");
+      return;
+    }
+    const declaringTeam = getPlayerTeam(prive.declarer);
+    const declaration = this.getTeamBestEnvido(declaringTeam);
+    if (action === "DECLARE_PRIVE") {
+      prive.declaredPoints = declaration.points;
+      prive.next = "ANSWER_PRIVE";
+      this.emit(actor, "response", `${this.actorLabel(actor)} canta ${declaration.points} de prive.`, `Privo ${declaration.points}`);
+      return;
+    }
+    const reply = this.getTeamBestEnvido(getPlayerTeam(actor));
+    const beatsDeclaration = this.winsEnvite(reply, declaration);
+    const winner = beatsDeclaration ? getPlayerTeam(actor) : declaringTeam;
+    prive.next = undefined;
+    prive.winnerTeam = winner;
+    prive.winningPoints = beatsDeclaration ? reply.points : declaration.points;
+    s.envido.resolved = true;
+    if (s.scores[winner] === s.config.targetScore - 1) {
+      const canto = beatsDeclaration ? `Privo ${reply.points}` : "Son buenas";
+      this.emit(actor, "response", `${this.actorLabel(actor)}: «${canto}».`, canto);
+    }
+    if (this.addScore(winner, 1)) {
+      s.handSummary = { trickWinnerTeam: winner, trucoPoints: 0, reason: "Partida cerrada con el prive" };
+    } else {
+      this.handleCallTruco(actor, prive.declarer);
     }
   }
 
@@ -921,7 +986,7 @@ export class TrucoEngine {
     this.resumePausedTrucoOrContinue();
   }
 
-  private handleCallTruco(actor: PlayerId): void {
+  private handleCallTruco(actor: PlayerId, priveResponder?: PlayerId): void {
     const s = this.state;
     const actorTeam = getPlayerTeam(actor);
     const oppTeam = getOppositeTeam(actorTeam);
@@ -940,13 +1005,13 @@ export class TrucoEngine {
       nextLevel = Math.min(4, s.truco.level + 1) as TrucoLevel;
     }
 
-    const label = trucoCallLabel(nextLevel, s.phase === "AWAITING_TRUCO");
+    const label = priveResponder ? "Privo y truco" : trucoCallLabel(nextLevel, s.phase === "AWAITING_TRUCO");
     s.phase = "AWAITING_TRUCO";
     s.truco.pendingLevel = nextLevel;
     s.truco.caller = actor;
     s.truco.callerTeam = actorTeam;
     s.truco.responderTeam = oppTeam;
-    s.truco.responder = this.pickResponder(oppTeam);
+    s.truco.responder = priveResponder ?? this.pickResponder(oppTeam);
 
     this.emit(
       actor,
@@ -1232,6 +1297,8 @@ export class TrucoEngine {
             : "";
         s.flor.resolutionText = `Envite con flor: ${this.teamLabel("nosotros")} ${nDesc} vs ${this.teamLabel("ellos")} ${eDesc}${tieNote} → ${this.teamLabel(florWinnerTeam)} (+${pts})`;
 
+        const losingSeat = florWinnerTeam === "nosotros" ? eFlor.player : nFlor.player;
+        if (losingSeat) this.emit(losingSeat, "flor_result", `${this.actorLabel(losingSeat)}: «Son buenas».`, "Son buenas");
         if (this.addScore(florWinnerTeam, pts)) {
           s.handSummary = {
             trickWinnerTeam: florWinnerTeam,
@@ -1251,16 +1318,7 @@ export class TrucoEngine {
         const nEnv = this.getTeamBestEnvido("nosotros");
         const eEnv = this.getTeamBestEnvido("ellos");
 
-        let envWinnerTeam: TeamId;
-        if (nEnv.points > eEnv.points) {
-          envWinnerTeam = "nosotros";
-        } else if (eEnv.points > nEnv.points) {
-          envWinnerTeam = "ellos";
-        } else {
-          const nDist = getSeatDistanceFromMano(nEnv.player, s.mano, s.seats);
-          const eDist = getSeatDistanceFromMano(eEnv.player, s.mano, s.seats);
-          envWinnerTeam = nDist <= eDist ? "nosotros" : "ellos";
-        }
+        const envWinnerTeam = this.winsEnvite(nEnv, eEnv) ? "nosotros" : "ellos";
 
         const isFalta = s.envido.chain[s.envido.chain.length - 1] === "falta_envido";
         const pts = isFalta
@@ -1279,6 +1337,8 @@ export class TrucoEngine {
         const tieNote = nEnv.points === eEnv.points ? " (Mano)" : "";
         const envStr = `Envido: ${this.actorLabel(nEnv.player)} ${nEnv.points} vs ${this.actorLabel(eEnv.player)} ${eEnv.points}${tieNote} → ${this.teamLabel(envWinnerTeam)} (+${pts})`;
 
+        const losingSeat = envWinnerTeam === "nosotros" ? eEnv.player : nEnv.player;
+        this.emit(losingSeat, "envido_result", `${this.actorLabel(losingSeat)}: «Son buenas».`, "Son buenas");
         if (this.addScore(envWinnerTeam, pts)) {
           s.handSummary = {
             trickWinnerTeam: envWinnerTeam,
@@ -1365,6 +1425,7 @@ export class TrucoEngine {
     s.ley = { active: false, declaredBy: [], hiddenFlorPlayers: [], forfeitedBy: [] };
     s.pausedTruco = undefined;
     s.handSummary = undefined;
+    this.startPriveIfNeeded();
 
     this.emit(
       "system",

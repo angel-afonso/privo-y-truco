@@ -318,6 +318,12 @@ export function projectStateForViewer(state: GameState, viewerSeat: PlayerId): G
     initialHands: projectSeatRecordForViewer(state.initialHands, viewerSeat, seats),
     hands: projectSeatRecordForViewer(state.hands, viewerSeat, seats),
     tricks: projectedTricks,
+    prive: state.prive ? {
+      ...state.prive,
+      asker: mapSeatToViewer(state.prive.asker, viewerSeat, seats),
+      declarer: mapSeatToViewer(state.prive.declarer, viewerSeat, seats),
+      winnerTeam: mTeam(state.prive.winnerTeam),
+    } : undefined,
     envido: {
       ...state.envido,
       caller: mSeat(state.envido.caller),

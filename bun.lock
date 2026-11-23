@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "truco-venezolano-pixi",
+      "name": "privo-y-truco",
       "dependencies": {
         "@supabase/supabase-js": "^2.119.2",
         "pixi.js": "^8.9.2",

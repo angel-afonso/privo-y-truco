@@ -50,6 +50,7 @@ export type FlorStage =
 export type GamePhase =
   | "MENU"
   | "PLAYING"
+  | "AWAITING_PRIVE"
   | "AWAITING_ENVIDO"
   | "AWAITING_FLOR"
   | "AWAITING_TRUCO"
@@ -68,6 +69,17 @@ export interface TrickState {
   played: Partial<Record<PlayerId, PlayedCard>>;
   winnerTeam?: TrickWinner;
   winnerPlayer?: PlayerId;
+}
+
+export type PriveAction = "ASK_PRIVE" | "DECLARE_PRIVE" | "ANSWER_PRIVE";
+
+export interface PriveState {
+  asker: PlayerId;
+  declarer: PlayerId;
+  next?: PriveAction;
+  declaredPoints?: number;
+  winningPoints?: number;
+  winnerTeam?: TeamId;
 }
 
 export interface EnvidoState {
@@ -181,6 +193,7 @@ export interface GameState {
   hands: Partial<Record<PlayerId, Card[]>>;
   trickIndex: number;
   tricks: TrickState[];
+  prive?: PriveState;
   envido: EnvidoState;
   flor: FlorState;
   truco: TrucoState;
@@ -192,7 +205,22 @@ export interface GameState {
   log: GameEvent[];
 }
 
+export function getActiveActor(state: GameState): PlayerId | null {
+  switch (state.phase) {
+    case "PLAYING": return state.turn;
+    case "AWAITING_PRIVE": {
+      const p = state.prive;
+      return p?.next ? (p.next === "DECLARE_PRIVE" ? p.declarer : p.asker) : null;
+    }
+    case "AWAITING_ENVIDO": return state.envido.responder ?? null;
+    case "AWAITING_FLOR": return state.flor.responder ?? null;
+    case "AWAITING_TRUCO": return state.truco.responder ?? null;
+    default: return null;
+  }
+}
+
 export type PlayerAction =
+  | { type: PriveAction }
   | { type: "PLAY_CARD"; cardId: string; burned?: boolean }
   | { type: "CALL_A_LEY" }
   | { type: "CALL_ENVIDO"; call: EnvidoCallType }

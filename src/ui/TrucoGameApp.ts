@@ -26,8 +26,10 @@ import {
   PartnerTacticalHint,
 } from "../engine/partnerComms";
 import {
+  Card,
   GameConfig,
   GameState,
+  getActiveActor,
   getPlayerLabel,
   getPlayerTeam,
   getTeamLabel,
@@ -67,6 +69,7 @@ import { PersistedHostSnapshot } from "../multiplayer/sessionStore";
 import { StakeBoard } from "./stakeBoard";
 import { tableChoices, tableStake } from "./tableBids";
 import { createRulesDialog } from "./rulesDialog";
+import { HandResult, type RevealedHand } from "./handResult";
 import { RoomChat } from "./roomChat";
 import { RoomDirectory } from "./roomDirectory";
 import { MultiplayerLobby } from "./multiplayerLobby";
@@ -166,7 +169,7 @@ export class TrucoGameApp {
     withFlor: true,
   };
   private menuOverlay = new Container();
-  private summaryOverlay = new Container();
+  private summaryOverlay: HandResult;
   private rulesModal = createRulesDialog();
 
   // Multijugador Online (Supabase: Server Postgres/Edge o Realtime endurecido)
@@ -190,6 +193,16 @@ export class TrucoGameApp {
 
   constructor(app: Application) {
     this.app = app;
+    this.summaryOverlay = new HandResult(app.canvas.parentElement ?? document.body, () => {
+      const phase = this.engine.getState().phase;
+      if (phase === "HAND_OVER" && !this.pendingAction) {
+        soundFX.playCardSlide();
+        this.dispatchPlayer({ type: "NEXT_HAND" });
+      } else if (phase === "MATCH_OVER") {
+        if (!this.isOnlineMatch) this.startMatch();
+        else if (this.roomClient.isHost) void this.startOnlineMatchAsHost();
+      }
+    }, () => this.showMenu());
     soundFX.enableOnInteraction();
     this.engine = new TrucoEngine(this.menuConfig);
 
@@ -246,7 +259,6 @@ export class TrucoGameApp {
     });
     this.overlayLayer.addChild(
       this.menuOverlay,
-      this.summaryOverlay,
       this.partnerCommDrawer,
     );
 
@@ -420,6 +432,7 @@ export class TrucoGameApp {
     const phase = this.engine.getState().phase;
     return (
       phase === "PLAYING" ||
+      phase === "AWAITING_PRIVE" ||
       phase === "AWAITING_ENVIDO" ||
       phase === "AWAITING_TRUCO" ||
       phase === "AWAITING_FLOR"
@@ -735,7 +748,7 @@ export class TrucoGameApp {
       .rect(left + 7, top + 7, coverW - 14, coverH - 14).stroke({ width: 1, color: 0xc2a884, alpha: 0.64 })
       .rect(left + 11, top + 11, coverW - 22, coverH - 22).stroke({ width: 0.7, color: 0xc2a884, alpha: 0.45 });
     panel.addChild(bg);
-    const heading = new Text({ text: "Truco\nvenezolano", style: {
+    const heading = new Text({ text: "Privo\ny Truco", style: {
       fontFamily: FONT_DISPLAY, fontSize: isNarrow ? 37 : 56, lineHeight: isNarrow ? 37 : 54,
       fontWeight: "700", fill: PALETTE.ivoryWarm,
     } });
@@ -1109,8 +1122,8 @@ export class TrucoGameApp {
     }
     const before = previous?.viewState;
     const next = payload.viewState;
-    const turnBegan = this.activeActorIn(next) === "player" &&
-      (!before || this.activeActorIn(before) !== "player" || before.phase !== next.phase ||
+    const turnBegan = getActiveActor(next) === "player" &&
+      (!before || getActiveActor(before) !== "player" || before.phase !== next.phase ||
         before.handNumber !== next.handNumber || before.trickIndex !== next.trickIndex);
     soundFX.playOnlineUpdate(before, next, turnBegan);
     this.clearPendingAction();
@@ -1121,7 +1134,6 @@ export class TrucoGameApp {
     this.burnMode = false;
     this.directory.hide();
     this.menuOverlay.visible = false;
-    this.summaryOverlay.visible = false;
     this.mpLobby.close();
 
     this.onlineSeatNames = { ...payload.seatNames };
@@ -1222,7 +1234,7 @@ export class TrucoGameApp {
     this.clearActionBar();
     this.directory.show();
     this.menuOverlay.visible = false;
-    this.summaryOverlay.visible = false;
+    this.summaryOverlay.hide();
     this.partnerCommDrawer.visible = false;
     this.partnerWhisper.hide();
     this.lastPartnerMsg = null;
@@ -1248,7 +1260,7 @@ export class TrucoGameApp {
     this.burnMode = false;
     this.directory.hide();
     this.menuOverlay.visible = false;
-    this.summaryOverlay.visible = false;
+    this.summaryOverlay.hide();
     this.partnerCommDrawer.visible = false;
     this.partnerWhisper.hide();
     this.lastPartnerMsg = null;
@@ -1355,16 +1367,8 @@ export class TrucoGameApp {
     this.syncFromState(false);
   }
 
-  private activeActorIn(s: GameState): PlayerId | null {
-    if (s.phase === "PLAYING") return s.turn;
-    if (s.phase === "AWAITING_ENVIDO") return s.envido.responder ?? null;
-    if (s.phase === "AWAITING_FLOR") return s.flor.responder ?? null;
-    if (s.phase === "AWAITING_TRUCO") return s.truco.responder ?? null;
-    return null;
-  }
-
   private getActiveActor(): PlayerId | null {
-    return this.activeActorIn(this.engine.getState());
+    return getActiveActor(this.engine.getState());
   }
 
   private scheduleBotIfNeeded(): void {
@@ -1402,7 +1406,7 @@ export class TrucoGameApp {
       if (hs.phase === "HAND_OVER" || hs.phase === "MATCH_OVER" || hs.phase === "MENU") {
         return;
       }
-      const canonicalActive = this.activeActorIn(this.hostEngine.getState());
+      const canonicalActive = getActiveActor(this.hostEngine.getState());
       if (!canonicalActive) return;
 
       const isHumanSeat = this.onlineCanonicalHumanSeats.has(canonicalActive);
@@ -1420,7 +1424,7 @@ export class TrucoGameApp {
       this.botTimer = setTimeout(() => {
         this.botTimer = null;
         if (!this.isOnlineMatch || !this.hostEngine) return;
-        const freshActive = this.activeActorIn(this.hostEngine.getState());
+        const freshActive = getActiveActor(this.hostEngine.getState());
         if (!freshActive) return;
         const freshIsHuman = this.onlineCanonicalHumanSeats.has(freshActive);
         const freshIsOffline =
@@ -1476,6 +1480,7 @@ export class TrucoGameApp {
       if (!this.isOnlineMatch) soundFX.playEvent(ev.type, s.matchWinner === "nosotros");
 
       const awaitingResponse =
+        s.phase === "AWAITING_PRIVE" ||
         s.phase === "AWAITING_TRUCO" ||
         s.phase === "AWAITING_ENVIDO" ||
         s.phase === "AWAITING_FLOR";
@@ -1613,7 +1618,7 @@ export class TrucoGameApp {
       const hasMidHandProgress =
         s.trickIndex > 0 ||
         s.tricks.some((tr) => Object.keys(tr.played).length > 0) ||
-        s.phase !== "PLAYING" ||
+        (s.phase !== "PLAYING" && s.prive?.next !== "ASK_PRIVE") ||
         s.envido.chain.length > 0 ||
         s.truco.level > 0 ||
         s.flor.stage !== "none";
@@ -2119,7 +2124,7 @@ export class TrucoGameApp {
       this.deckGroup.visible = true;
       this.positionDeckAndVira(false);
 
-      if (!this.isCompactLayout()) {
+      if (!this.isCompactLayout() && s.phase === "PLAYING") {
         const manoLabel = this.seatLabel(s.mano);
         const isOurMano = getPlayerTeam(s.mano) === "nosotros";
         this.centerToast.show(
@@ -2229,6 +2234,16 @@ export class TrucoGameApp {
     }
     if (!active) {
       this.setTurnStatus("");
+      return;
+    }
+
+    if (s.phase === "AWAITING_PRIVE" && s.prive) {
+      const who = this.seatLabel(active);
+      const ask = s.prive.next === "ASK_PRIVE";
+      const declare = s.prive.next === "DECLARE_PRIVE";
+      this.setTurnStatus(active === "player"
+        ? (ask ? "Pregunta el prive" : declare ? "Canta tus tantos" : "Responde al prive")
+        : (ask ? `Esperando la pregunta de ${who}` : `Esperando a ${who}`), active === "player");
       return;
     }
 
@@ -2834,6 +2849,7 @@ export class TrucoGameApp {
         s.phase === "AWAITING_ENVIDO" ? s.envido.caller : s.phase === "AWAITING_FLOR" ? s.flor.caller : undefined;
       const { cx, cy } = this.getArenaMetrics();
       this.tableCall.text = caller ? (s.phase === "AWAITING_FLOR" && s.flor.stage === "flor" ? "Flor" : stake.name) : "Primera baza";
+      if (s.phase === "AWAITING_PRIVE") this.tableCall.text = "Prive";
       this.tableCall.style.fontSize = compact ? 24 : 37;
       this.tableCall.alpha = caller ? 0.95 : 0.62;
       this.tableCall.position.set(cx, cy - (compact ? 7 : 10));
@@ -2841,6 +2857,10 @@ export class TrucoGameApp {
       this.tableCaller.text = speaker === "player"
         ? (caller ? "TU CANTO" : "SALES TÚ")
         : `${caller ? "Canta" : "Sale"} ${this.seatLabel(speaker)}`.toUpperCase();
+      if (s.phase === "AWAITING_PRIVE" && s.prive) {
+        this.tableCaller.text = s.prive.declaredPoints !== undefined
+          ? `PRIVO ${s.prive.declaredPoints}` : s.prive.next === "ASK_PRIVE" ? "A UNA PIEDRA" : "¿CUÁNTO PRIVAS?";
+      }
       this.tableCaller.position.set(cx, cy + (compact ? 17 : 22));
     }
     const pHand = s.initialHands.player ?? [];
@@ -2956,260 +2976,97 @@ export class TrucoGameApp {
     });
   }
 
-  private updateSummaryOverlay(): void {
-    this.summaryOverlay.removeChildren();
-    const s = this.engine.getState();
+  private revealedResultHands(s: GameState): RevealedHand[] {
+    if (s.flor.stage !== "none" && s.flor.resolved) {
+      const flor = s.flor;
+      if (flor.nosotrosBestPlayer && flor.ellosBestPlayer &&
+          flor.nosotrosPoints !== undefined && flor.ellosPoints !== undefined) {
+        return (["nosotros", "ellos"] as const).map(team => {
+          const seat = team === "nosotros" ? flor.nosotrosBestPlayer! : flor.ellosBestPlayer!;
+          const points = team === "nosotros" ? flor.nosotrosPoints : flor.ellosPoints;
+          return { label: `${this.seatLabel(seat)} · ${points} pts`, cards: s.initialHands[seat] ?? [], winner: flor.winnerTeam === team };
+        });
+      }
+      const owner = flor.winnerPlayer ?? flor.caller ?? "player";
+      const cards = s.initialHands[owner] ?? [];
+      const value = evaluateFlor(cards, s.vira);
+      const label = value.isReservada ? "Flor reservada" : `${value.points} pts`;
+      return [{ label: `${this.seatLabel(owner)} · ${label}`, cards, winner: true }];
+    }
+    const envido = s.envido;
+    if (!envido.accepted || envido.nosotrosPoints === undefined || envido.ellosPoints === undefined) return [];
+    return (["nosotros", "ellos"] as const).map(team => {
+      const seat = team === "nosotros" ? envido.nosotrosBestPlayer ?? "player" : envido.ellosBestPlayer ?? "cpu";
+      const points = team === "nosotros" ? envido.nosotrosPoints : envido.ellosPoints;
+      return {
+        label: `${this.seatLabel(seat)} · ${points} pts`,
+        cards: getEnvidoCards(s.initialHands[seat] ?? [], s.vira),
+        winner: envido.winnerTeam === team,
+      };
+    });
+  }
 
-    if (s.phase !== "HAND_OVER" && s.phase !== "MATCH_OVER") {
-      this.summaryOverlay.visible = false;
+  private drawRevealedCards(cards: Card[], vira: Card): HTMLCanvasElement {
+    const hand = new Container();
+    try {
+      cards.forEach((card, index) => {
+        const view = new CardView(card, vira, true);
+        view.x = index * (CARD_WIDTH + 4);
+        hand.addChild(view);
+      });
+      const canvas = this.app.renderer.extract.canvas({ target: hand, resolution: 1.5 }) as HTMLCanvasElement;
+      canvas.setAttribute("role", "img");
+      canvas.setAttribute("aria-label", cards.map(card => getCardName(card, vira)).join(", "));
+      return canvas;
+    } finally {
+      hand.destroy({ children: true });
+    }
+  }
+
+  private updateSummaryOverlay(): void {
+    const s = this.engine.getState();
+    const matchOver = s.phase === "MATCH_OVER";
+    if (this.inMenu || (!matchOver && s.phase !== "HAND_OVER")) {
+      this.summaryOverlay.hide();
       return;
     }
-
-    this.summaryOverlay.visible = true;
-    const w = this.app.screen.width;
-    const h = this.app.screen.height;
-    const isNarrow = w < 480;
-
-    const isMatchOver = s.phase === "MATCH_OVER";
-    const showFlorCards = s.flor.stage !== "none" && s.flor.resolved;
-    const showEnvidoCards =
-      !showFlorCards &&
-      Boolean(s.envido.accepted) &&
-      s.envido.nosotrosPoints !== undefined &&
-      s.envido.ellosPoints !== undefined;
-    const hasShowcase = showFlorCards || showEnvidoCards;
-
-    const cardW = isNarrow ? Math.min(362, w - 20) : hasShowcase ? 488 : 440;
-    const cardH = hasShowcase
-      ? isMatchOver
-        ? 368
-        : 298
-      : isMatchOver
-        ? 258
-        : 190;
-
-    const panel = new Container();
-    const targetY = isMatchOver ? h / 2 : h - cardH / 2 - 30;
-    panel.position.set(w / 2, targetY);
-    const finalScale = Math.min(1, (w - 20) / cardW);
-    this.summaryOverlay.addChild(panel);
-
-    const ourWin = isMatchOver
-      ? s.matchWinner === "nosotros"
-      : s.handSummary?.trickWinnerTeam === "nosotros";
-
-    const bg = new Graphics()
-      .roundRect(-cardW / 2 + 2, -cardH / 2 + 5, cardW, cardH, 16)
-      .fill({ color: 0x000000, alpha: 0.45 })
-      .roundRect(-cardW / 2, -cardH / 2, cardW, cardH, 16)
-      .fill({ color: PALETTE.surfaceCard, alpha: 0.98 })
-      .stroke({ width: 1.6, color: ourWin ? PALETTE.brass : PALETTE.crimsonBorder });
-    panel.addChild(bg);
-
-    const result = isMatchOver ? "la partida" : "la mano";
-    const winner = ourWin
-      ? this.is2v2() ? "Ganamos" : "Ganaste"
-      : this.is2v2() ? "Ellos ganaron" : `${this.seatLabel("cpu")} ganó`;
-
-    const heading = new Text({
-      text: `${winner} ${result}`,
-      style: {
-        fontFamily: FONT_DISPLAY,
-        fontSize: isNarrow ? 20 : 23,
-        fontWeight: "700",
-        fill: ourWin ? PALETTE.brassLight : PALETTE.crimsonBorder,
-      },
-    });
-    heading.scale.set(Math.min(1, (cardW - 24) / heading.width));
-    heading.anchor.set(0.5);
-    heading.position.set(0, -cardH / 2 + 26);
-    panel.addChild(heading);
-
-    if (hasShowcase) {
-      const showcaseY = -cardH / 2 + 102;
-      const miniScale = isNarrow ? 0.37 : 0.42;
-
-      const renderMiniGroup = (
-        centerX: number,
-        title: string,
-        cardsToShow: typeof s.vira[],
-        isWinner: boolean,
-      ) => {
-        const boxW = Math.min(cardW / 2 - 14, cardsToShow.length === 3 ? 166 : 152);
-        const boxH = 98;
-        const box = new Graphics()
-          .roundRect(centerX - boxW / 2, showcaseY - boxH / 2, boxW, boxH, 10)
-          .fill({ color: isWinner ? 0x123324 : PALETTE.surfaceRecessed, alpha: 0.94 })
-          .stroke({
-            width: isWinner ? 1.4 : 1,
-            color: isWinner ? PALETTE.brass : PALETTE.borderSubtle,
-            alpha: isWinner ? 0.92 : 0.7,
-          });
-        panel.addChild(box);
-
-        const lbl = new Text({
-          text: title,
-          style: {
-            fontFamily: FONT_UI,
-            fontSize: isNarrow ? 10 : 11,
-            fontWeight: "700",
-            fill: isWinner ? PALETTE.brassLight : PALETTE.inkSecondary,
-          },
-        });
-        lbl.anchor.set(0.5);
-        lbl.position.set(centerX, showcaseY - boxH / 2 + 13);
-        panel.addChild(lbl);
-
-        const spread = cardsToShow.length === 3 ? 34 * (miniScale / 0.38) : 42 * (miniScale / 0.38);
-        cardsToShow.forEach((c, idx) => {
-          const offset = idx - (cardsToShow.length - 1) / 2;
-          const cv = new CardView(c, s.vira, true);
-          cv.scale.set(miniScale);
-          cv.position.set(centerX + offset * spread, showcaseY + 12);
-          cv.rotation = offset * 0.06;
-          panel.addChild(cv);
-        });
-      };
-
-      if (showEnvidoCards) {
-        const nSeat = s.envido.nosotrosBestPlayer ?? "player";
-        const eSeat = s.envido.ellosBestPlayer ?? "cpu";
-        const nCards = getEnvidoCards(s.initialHands[nSeat] ?? [], s.vira);
-        const eCards = getEnvidoCards(s.initialHands[eSeat] ?? [], s.vira);
-        const halfOffset = cardW * 0.245;
-        renderMiniGroup(
-          -halfOffset,
-          `${this.seatLabel(nSeat)}: ${s.envido.nosotrosPoints}`,
-          nCards,
-          s.envido.winnerTeam === "nosotros",
-        );
-        renderMiniGroup(
-          halfOffset,
-          `${this.seatLabel(eSeat)}: ${s.envido.ellosPoints}`,
-          eCards,
-          s.envido.winnerTeam === "ellos",
-        );
-      } else if (showFlorCards) {
-        const bothHadFlor =
-          s.flor.nosotrosPoints !== undefined &&
-          s.flor.ellosPoints !== undefined &&
-          s.flor.nosotrosBestPlayer &&
-          s.flor.ellosBestPlayer;
-        if (bothHadFlor) {
-          const halfOffset = cardW * 0.245;
-          renderMiniGroup(
-            -halfOffset,
-            `${this.seatLabel(s.flor.nosotrosBestPlayer!)}: ${s.flor.nosotrosPoints}`,
-            s.initialHands[s.flor.nosotrosBestPlayer!] ?? [],
-            s.flor.winnerTeam === "nosotros",
-          );
-          renderMiniGroup(
-            halfOffset,
-            `${this.seatLabel(s.flor.ellosBestPlayer!)}: ${s.flor.ellosPoints}`,
-            s.initialHands[s.flor.ellosBestPlayer!] ?? [],
-            s.flor.winnerTeam === "ellos",
-          );
-        } else {
-          const owner = s.flor.winnerPlayer ?? s.flor.caller ?? "player";
-          const ownerHand = s.initialHands[owner] ?? [];
-          const ownerEval = evaluateFlor(ownerHand, s.vira);
-          const ownerLbl = this.seatLabel(owner);
-          const ownerTitle = ownerEval.isReservada
-            ? `Flor Reservada (${ownerLbl})`
-            : `Flor ${ownerLbl} (${ownerEval.points} pts)`;
-          renderMiniGroup(0, ownerTitle, ownerHand, true);
-        }
-      }
-    }
-
-    const lines: string[] = [];
-    if (s.handSummary?.florText) lines.push(s.handSummary.florText);
-    if (s.handSummary?.envidoText) lines.push(s.handSummary.envidoText);
-    if (s.handSummary && s.handSummary.trucoPoints > 0) {
-      lines.push(
-        `${s.handSummary.reason} (+${s.handSummary.trucoPoints} piedra${s.handSummary.trucoPoints > 1 ? "s" : ""})`,
-      );
-    } else if (s.handSummary && !s.handSummary.florText && !s.handSummary.envidoText) {
-      lines.push(s.handSummary.reason);
-    }
-    if (this.isOnlineMatch && this.roomClient.mySeat) {
-      for (let i = 0; i < lines.length; i++) {
-        lines[i] = formatOnlineSummaryText(lines[i], s.config.mode, this.roomClient.mySeat, (seat) => this.seatLabel(seat));
-      }
-    }
+    const ourWin = (matchOver ? s.matchWinner : s.handSummary?.trickWinnerTeam) === "nosotros";
     const rival = this.is2v2() ? getTeamLabel("ellos", s.config.mode) : this.seatLabel("cpu");
-    lines.push(
-      `Marcador: ${getTeamLabel("nosotros", s.config.mode)} ${s.scores.nosotros}  —  ${rival} ${s.scores.ellos}  (Meta ${s.config.targetScore})`,
-    );
-
-    const body = new Text({
-      text: lines.join("\n"),
-      style: {
-        fontFamily: FONT_UI,
-        fontSize: isNarrow ? 11.5 : 12.5,
-        lineHeight: 18,
-        align: "center",
-        fill: PALETTE.inkLight,
-        wordWrap: true,
-        wordWrapWidth: cardW - 30,
-      },
-    });
-    body.anchor.set(0.5);
-    body.position.set(0, hasShowcase ? cardH / 2 - 96 : -4);
-    panel.addChild(body);
-
-    if (isMatchOver) {
-      const bw = isNarrow ? (cardW - 44) / 2 : 156;
-      const canRestart = !this.isOnlineMatch || this.roomClient.isHost;
-      const againBtn = new PillButton({
-        label: canRestart ? "Jugar de nuevo" : "Esperando host",
-        width: bw,
-        height: 44,
-        theme: "primary",
-        onClick: () => {
-          if (this.isOnlineMatch && this.roomClient.isHost) {
-            void this.startOnlineMatchAsHost();
-          } else if (!this.isOnlineMatch) {
-            this.startMatch();
-          }
-        },
-      });
-      againBtn.setEnabled(canRestart);
-      againBtn.position.set(-bw / 2 - 6, cardH / 2 - 36);
-
-      const menuBtn = new PillButton({
-        label: "Menú",
-        width: bw,
-        height: 44,
-        theme: "ghost",
-        onClick: () => this.showMenu(),
-      });
-      menuBtn.position.set(bw / 2 + 6, cardH / 2 - 36);
-      panel.addChild(againBtn, menuBtn);
-    } else {
-      const nextBtn = new PillButton({
-        label: this.pendingAction?.label ?? "Siguiente mano",
-        width: 196,
-        height: 44,
-        theme: "primary",
-        onClick: () => {
-          soundFX.playCardSlide();
-          this.dispatchPlayer({ type: "NEXT_HAND" });
-        },
-      });
-      nextBtn.setEnabled(!this.pendingAction);
-      nextBtn.position.set(0, cardH / 2 - 32);
-      panel.addChild(nextBtn);
+    const winner = ourWin ? (this.is2v2() ? "Ganamos" : "Ganaste") : (this.is2v2() ? "Ellos ganaron" : `${rival} ganó`);
+    const localize = (line: string) => this.isOnlineMatch && this.roomClient.mySeat
+      ? formatOnlineSummaryText(line, s.config.mode, this.roomClient.mySeat, seat => this.seatLabel(seat))
+      : line;
+    const summary = s.handSummary;
+    const notes = [summary?.florText, summary?.envidoText].filter((note): note is string => Boolean(note)).map(localize);
+    if (s.prive?.winnerTeam) {
+      const side = s.prive.winnerTeam === "nosotros" ? getTeamLabel("nosotros", s.config.mode) : rival;
+      notes.unshift(`Prive de ${side} · ${s.prive.winningPoints} tantos (+1 piedra)`);
     }
-
-    panel.alpha = 0;
-    panel.scale.set(0.92 * finalScale);
-    this.tweens.to(
-      panel,
-      { alpha: 1, scaleX: finalScale, scaleY: finalScale },
-      220,
-      Easing.easeOutBack,
-    );
+    let reason = "";
+    if (summary && (summary.trucoPoints || !notes.length)) {
+      reason = summary.reason.endsWith(" gana el lance del Truco")
+        ? TRUCO_LEVEL_NAMES[s.truco.level]
+        : localize(summary.reason);
+    }
+    const canRestart = !this.isOnlineMatch || this.roomClient.isHost;
+    const action = matchOver
+      ? (canRestart ? "Jugar de nuevo" : "Esperando al anfitrión")
+      : this.pendingAction?.label ?? "Siguiente mano";
+    this.summaryOverlay.show({
+      hand: s.handNumber,
+      target: s.config.targetScore,
+      title: `${winner} la ${matchOver ? "partida" : "mano"}`,
+      matchOver,
+      scores: [
+        { label: getTeamLabel("nosotros", s.config.mode), value: s.scores.nosotros },
+        { label: rival, value: s.scores.ellos },
+      ],
+      reason,
+      points: summary?.trucoPoints ?? 0,
+      notes,
+      reveals: this.revealedResultHands(s),
+      vira: s.vira,
+    }, action, matchOver ? canRestart : !this.pendingAction, cards => this.drawRevealedCards(cards, s.vira));
   }
 
   private drawTableAndArena(): void {
@@ -3356,6 +3213,7 @@ export class TrucoGameApp {
     const { cx, cy, cardScale } = this.getArenaMetrics();
     const headerH = this.headerHeight();
 
+    this.summaryOverlay.centerOn(cx, cy);
     this.chat?.button.classList.toggle("compact", compact);
     this.buildTopControls(compact);
     this.buildPartnerCommBtn(compact);

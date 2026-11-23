@@ -8,6 +8,7 @@ import { TrucoEngine } from "../../../src/engine/gameEngine.ts";
 import {
   GameConfig,
   GameState,
+  getActiveActor,
   getSeatsForMode,
   PlayerAction,
   PlayerId,
@@ -61,14 +62,6 @@ function generateRoomCode(): string {
     code += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
   }
   return code;
-}
-
-function getActiveActor(state: GameState): PlayerId | null {
-  if (state.phase === "PLAYING") return state.turn;
-  if (state.phase === "AWAITING_ENVIDO") return state.envido.responder ?? null;
-  if (state.phase === "AWAITING_FLOR") return state.flor.responder ?? null;
-  if (state.phase === "AWAITING_TRUCO") return state.truco.responder ?? null;
-  return null;
 }
 
 function buildClientPayload(room: RoomRow, players: PlayerRow[], caller: PlayerRow | null) {

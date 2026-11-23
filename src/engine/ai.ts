@@ -20,6 +20,7 @@ export function decideBotAction(
 ): PlayerAction | null {
   const state = engine.getState();
   const legal = engine.getLegalActions(actor);
+  if (legal.priveAction) return { type: legal.priveAction };
   const myTeam = getPlayerTeam(actor);
 
   const hand = state.hands[actor] ?? [];

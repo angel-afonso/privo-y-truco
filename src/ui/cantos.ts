@@ -31,6 +31,10 @@ export const cantos = {
   quiero: "¡Quiero!",
   "no-quiero": "¡No quiero!",
   "me-voy": "¡Me voy!",
+  "cuanto-privas": "¿Cuánto privas?",
+  privo: "¡Privo!",
+  "privo-y-truco": "¡Privo y truco!",
+  "son-buenas": "¡Son buenas!",
 } as const;
 
 export type Canto = keyof typeof cantos;
@@ -49,6 +53,7 @@ function normalize(text: string): string {
 const byPhrase = new Map(Object.entries(cantos).map(([key, phrase]) => [normalize(phrase), key as Canto]));
 
 export function eventCanto(event: GameEvent): Canto | undefined {
-  if (!event.bubble || !["call", "response", "flor_result"].includes(event.type)) return;
+  if (!event.bubble || !["call", "response", "envido_result", "flor_result"].includes(event.type)) return;
+  if (/^privo \d+$/i.test(event.bubble)) return "privo";
   return byPhrase.get(normalize(event.bubble));
 }

@@ -26,6 +26,9 @@ export function pendingActionLabel(action: PlayerAction, state: GameState, nextL
     case "CALL_TRUCO": return trucoCallLabel(nextLevel ?? 1, state.phase === "AWAITING_TRUCO") + "…";
     case "CALL_ENVIDO": return envidoLabel(action.call, state.envido.chain.length > 0) + "…";
     case "CALL_FLOR": return "Flor…";
+    case "ASK_PRIVE": return "Preguntando el prive…";
+    case "DECLARE_PRIVE": return "Cantando el prive…";
+    case "ANSWER_PRIVE": return "Respondiendo al prive…";
     case "CALL_A_LEY": return "A ley…";
     case "RESPOND_ENVIDO": return envidoResponseLabel(action.accept, state.ley.active) + "…";
     case "RESPOND_TRUCO": return action.accept ? "Quiero…" : "No quiero…";

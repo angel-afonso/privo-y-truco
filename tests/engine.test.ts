@@ -408,6 +408,7 @@ describe("Flujo de Juego 1 vs 1, Cantos y Escaladas", () => {
     engine.dispatch("player", { type: "IRSE_AL_MAZO" });
     expect(engine.getState().flor.winnerTeam).toBe("nosotros");
     expect(engine.getState().scores.nosotros).toBe(5);
+    expect(engine.getState().log.filter(e => e.bubble === "Son buenas").map(e => e.actor)).toEqual(["cpu"]);
   });
 
   test("Partida completa simulada 1 vs 1 termina sin bloqueos", () => {

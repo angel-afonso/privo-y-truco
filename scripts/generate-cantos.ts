@@ -24,7 +24,8 @@ for (const name of cantoTakes) {
     if (await Bun.file(path).exists()) continue;
 
     // Dos afirmaciones cuando se encadena un lance: «A ley. Envido.»
-    const spoken = text.slice(1, -1).replace(/^A ley, (\p{L})/u, (_, letter: string) => "A ley. " + letter.toUpperCase()) + ".";
+    const question = text.endsWith("?");
+    const spoken = question ? text : text.slice(1, -1).replace(/^A ley, (\p{L})/u, (_, letter: string) => "A ley. " + letter.toUpperCase()) + ".";
     const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${cantoVoiceId}?output_format=mp3_44100_128`,
       {
@@ -32,7 +33,7 @@ for (const name of cantoTakes) {
         redirect: "error",
         headers: { "xi-api-key": key, "Content-Type": "application/json", Accept: "audio/mpeg" },
         body: JSON.stringify({
-          text: `[${take.direction}] ${spoken}`,
+          text: `[${question ? "brisk, direct question, one breath" : take.direction}] ${spoken}`,
           language_code: "es",
           model_id: "eleven_v3",
           seed: take.seed,

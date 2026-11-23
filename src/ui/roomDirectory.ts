@@ -25,7 +25,7 @@ export class RoomDirectory {
     this.root.innerHTML = `
       <div class="room-book wrap">
         <header class="room-cover">
-          <h1>Truco<br>venezolano</h1>
+          <h1>Privo<br> y Truco</h1>
           <div class="room-hand" aria-hidden="true"></div>
           <button class="room-solo">Jugar solo <span aria-hidden="true">→</span></button>
         </header>
