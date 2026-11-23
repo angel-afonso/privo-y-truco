@@ -498,10 +498,11 @@ describe("Cantos de A Ley / Con Ley / Sin Ley", () => {
     engine.dispatch("player", { type: "CALL_FLOR" });
     expect(engine.getState().scores.nosotros).toBe(3);
     expect(engine.getState().flor.resolved).toBe(true);
+    expect(engine.getState().lastEvent?.bubble).toBe("¡FLOR!");
     expect(engine.getState().ley.active).toBe(false);
   });
 
-  test("Si la Mano con Flor A Ley juega la 2.ª carta sin cantarla, pierde la Flor", () => {
+  test("Si la Mano salió a ley con flor y juega la 2.ª carta sin cantarla, pierde la Flor", () => {
     const engine = new TrucoEngine(
       { mode: "1v1", targetScore: 24, withFlor: true },
       {
@@ -525,7 +526,7 @@ describe("Cantos de A Ley / Con Ley / Sin Ley", () => {
     expect(engine.getState().scores.nosotros).toBe(0);
   });
 
-  test("Mano con Flor A Ley interrumpe un Envido del Pie cantando ¡Flor A Ley!", () => {
+  test("Tras salir a ley, la Mano interrumpe el Envido del Pie cantando ¡Flor!", () => {
     const engine = new TrucoEngine(
       { mode: "1v1", targetScore: 24, withFlor: true },
       {
@@ -553,7 +554,7 @@ describe("Cantos de A Ley / Con Ley / Sin Ley", () => {
     expect(engine.getState().phase).toBe("PLAYING");
   });
 
-  test("Mano sin Flor puede cantar ¡A Ley! de engaño y luego ¡A ley, Envido!", () => {
+  test.each([true, false])("El rival sin Flor responde al Envido a ley (acepta: %s)", (accept) => {
     const engine = new TrucoEngine(
       { mode: "1v1", targetScore: 24, withFlor: true },
       {
@@ -574,14 +575,14 @@ describe("Cantos de A Ley / Con Ley / Sin Ley", () => {
     engine.dispatch("player", { type: "CALL_ENVIDO", call: "envido" });
     expect(engine.getState().lastEvent?.bubble).toBe("¡A LEY, ENVIDO!");
 
-    engine.dispatch("cpu", { type: "RESPOND_ENVIDO", accept: true });
-    expect(engine.getState().lastEvent?.bubble).toBe("¡SIN LEY, QUIERO!");
+    engine.dispatch("cpu", { type: "RESPOND_ENVIDO", accept });
+    expect(engine.getState().lastEvent?.bubble).toBe(accept ? "¡SIN LEY, QUIERO!" : "¡SIN LEY, NO QUIERO!");
     expect(engine.getState().scores.nosotros).toBe(0);
     expect(engine.getState().envido.pendingSettlement).toBe(true);
 
     engine.dispatch("player", { type: "PLAY_CARD", cardId: "7_oros" });
     engine.dispatch("cpu", { type: "IRSE_AL_MAZO" });
-    expect(engine.getState().scores.nosotros).toBe(3);
+    expect(engine.getState().scores.nosotros).toBe(accept ? 3 : 2);
   });
 });
 

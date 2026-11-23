@@ -967,6 +967,7 @@ export class TrucoGameApp {
         void this.startOnlineMatchAsHost();
       },
       onLeaveRoom: async () => {
+        soundFX.stopVoices();
         this.resetOnlineState();
         await this.roomClient.leaveRoom(true);
         this.syncLobbySnapshot();
@@ -1209,6 +1210,7 @@ export class TrucoGameApp {
   }
 
   private showMenu(): void {
+    soundFX.stopVoices();
     this.clearBotTimer();
     this.cancelDealChoreography(false);
     if (this.isOnlineMatch) {
@@ -1235,6 +1237,7 @@ export class TrucoGameApp {
   }
 
   private startMatch(): void {
+    soundFX.stopVoices();
     this.clearBotTimer();
     this.cancelDealChoreography(false);
     if (this.isOnlineMatch) {
@@ -1320,7 +1323,7 @@ export class TrucoGameApp {
     const base = this.confirmedView;
     if (!base || this.pendingAction) return;
     const id = `${this.roomClient.clientId}-${Date.now()}-${++this.actionSequence}`;
-    const label = pendingActionLabel(action, this.engine.getLegalActions("player").nextTrucoLevel, this.engine.getState().envido.chain.length > 0);
+    const label = pendingActionLabel(action, base.viewState, this.engine.getLegalActions("player").nextTrucoLevel);
     this.pendingAction = { id, label, timer: setTimeout(() => this.recoverPendingAction(id), 5000) };
     this.engine.loadExternalState(previewPlayerAction(base.viewState, action));
     const sent = this.roomClient.sendPlayerAction(action, id, base.version);
@@ -1467,6 +1470,7 @@ export class TrucoGameApp {
 
     // 1) Audio, globos de canto y destellos
     if (s.lastEvent && s.lastEvent.id !== this.lastEventId) {
+      if (!this.isOnlineMatch) soundFX.playNewCantos(s.log, this.lastEventId);
       this.lastEventId = s.lastEvent.id;
       const ev = s.lastEvent;
       if (!this.isOnlineMatch) soundFX.playEvent(ev.type, s.matchWinner === "nosotros");
@@ -2245,7 +2249,7 @@ export class TrucoGameApp {
       if (this.burnMode) {
         this.setTurnStatus("Modo quemar · Toca una carta", true);
       } else if (legal.mustCallFlorALey) {
-        this.setTurnStatus("Canta tu Flor a ley", true);
+        this.setTurnStatus("Canta tu flor", true);
       } else if (s.phase === "AWAITING_TRUCO") {
         const lvl = s.truco.pendingLevel ?? 1;
         this.setTurnStatus(`Responde ${TRUCO_LEVEL_NAMES[lvl]}`, true);

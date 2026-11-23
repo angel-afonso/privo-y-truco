@@ -1,9 +1,91 @@
 import type { GameEvent, GameState } from "../engine/types";
 
+import { cantoAudioPath, eventCanto, nextCantoTake, type Canto, type CantoTake } from "./cantos";
+
+const VOICE_CACHE_BYTES = 1024 * 1024;
+const bufferBytes = (buffer: AudioBuffer) => buffer.length * buffer.numberOfChannels * Float32Array.BYTES_PER_ELEMENT;
+
 class SoundFX {
   private ctx: AudioContext | null = null;
   private muted = false;
   private output: GainNode | null = null;
+
+  private buffers = new Map<string, AudioBuffer>();
+  private cachedBytes = 0;
+  private lastTake = new Map<Canto, CantoTake>();
+  private voice: AudioBufferSourceNode | null = null;
+  private voiceQueue = Promise.resolve();
+  private voiceSession = new AbortController();
+
+  private async loadVoice(ctx: AudioContext, filename: string, signal: AbortSignal): Promise<AudioBuffer | null> {
+    const cached = this.buffers.get(filename);
+    if (cached) {
+      this.buffers.delete(filename);
+      this.buffers.set(filename, cached);
+      return cached;
+    }
+    const response = await fetch(`${import.meta.env.BASE_URL}${cantoAudioPath}/${filename}`, { signal });
+    if (!response.ok) throw new Error(`Audio ${response.status}`);
+    const bytes = await response.arrayBuffer();
+    if (signal.aborted) return null;
+    const buffer = await ctx.decodeAudioData(bytes);
+    if (signal.aborted) return null;
+    const size = bufferBytes(buffer);
+    if (size <= VOICE_CACHE_BYTES) {
+      for (const [key, oldest] of this.buffers) {
+        if (this.cachedBytes + size <= VOICE_CACHE_BYTES) break;
+        this.cachedBytes -= bufferBytes(oldest);
+        this.buffers.delete(key);
+      }
+      this.buffers.set(filename, buffer);
+      this.cachedBytes += size;
+    }
+    return buffer;
+  }
+
+  public stopVoices(): void {
+    this.voiceSession.abort();
+    this.voiceSession = new AbortController();
+    this.voiceQueue = Promise.resolve();
+    this.voice?.stop();
+    this.voice = null;
+    this.buffers.clear();
+    this.cachedBytes = 0;
+  }
+
+  public playCanto(canto: Canto): void {
+    const ctx = this.ensureCtx();
+    if (!ctx || !this.output) return;
+    const { signal } = this.voiceSession;
+    const output = this.output;
+    const take = nextCantoTake(this.lastTake.get(canto));
+    this.lastTake.set(canto, take);
+    this.voiceQueue = this.voiceQueue.then(async () => {
+      if (signal.aborted || ctx.state !== "running") return;
+      const decoded = await this.loadVoice(ctx, `${canto}.${take}.mp3`, signal);
+      if (!decoded || signal.aborted || ctx.state !== "running") return;
+      const source = ctx.createBufferSource();
+      source.buffer = decoded;
+      source.connect(output);
+      this.voice = source;
+      await new Promise<void>(resolve => {
+        source.onended = () => {
+          source.disconnect();
+          if (this.voice === source) this.voice = null;
+          resolve();
+        };
+        source.start();
+      });
+    }).catch(() => {});
+  }
+
+  public playNewCantos(events: readonly GameEvent[], afterId: number): void {
+    for (const event of events) {
+      if (event.id <= afterId) continue;
+      const canto = eventCanto(event);
+      if (canto) this.playCanto(canto);
+    }
+  }
 
   public enableOnInteraction(): void {
     const unlock = () => {
@@ -20,6 +102,7 @@ class SoundFX {
     document.addEventListener("click", unlock, { capture: true });
     document.addEventListener("keydown", unlock, { capture: true });
     document.addEventListener("pointerup", unlock, { capture: true });
+    window.addEventListener("pagehide", () => this.stopVoices());
   }
 
   private ensureCtx(): AudioContext | null {
@@ -44,6 +127,7 @@ class SoundFX {
     if (previous && last && last.id > (previous.lastEvent?.id ?? 0)) {
       // Una misma carta puede generar también el cierre de baza, mano o partida.
       const events = current.log.filter(e => e.id > (previous.lastEvent?.id ?? 0));
+      this.playNewCantos(events, previous.lastEvent?.id ?? 0);
       const action = events.reverse().find(e =>
         e.type === "play_card" || e.type === "burn_card" || e.type === "call" || e.type === "response");
       if (action) this.playEvent(action.type, current.matchWinner === "nosotros");
@@ -78,6 +162,7 @@ class SoundFX {
 
   public toggleMute(): boolean {
     this.muted = !this.muted;
+    if (this.muted) this.stopVoices();
     if (this.output) this.output.gain.value = this.muted ? 0 : 1;
     return this.muted;
   }

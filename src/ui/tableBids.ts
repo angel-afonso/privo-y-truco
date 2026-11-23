@@ -1,6 +1,6 @@
 import { calculateFaltaEnvidoPoints, getTrucoAcceptPoints, getTrucoRejectPoints } from "../engine/evaluator";
 import { TrucoEngine } from "../engine/gameEngine";
-import { envidoLabel, PlayerAction, TRUCO_LEVEL_NAMES } from "../engine/types";
+import { envidoLabel, envidoResponseLabel, PlayerAction, TRUCO_LEVEL_NAMES, trucoCallLabel } from "../engine/types";
 
 function piedras(n: number): string {
   return `${n} ${n === 1 ? "piedra" : "piedras"}`;
@@ -61,8 +61,8 @@ export function tableChoices(engine: TrucoEngine, burnMode: boolean): TableChoic
     add("No quiero", "quiet", { type: "RESPOND_TRUCO", accept: false }, `Cedes ${getTrucoRejectPoints(s.truco.pendingLevel)}`);
   }
   if (legal.canRespondEnvido) {
-    add("Quiero", "lead", { type: "RESPOND_ENVIDO", accept: true }, piedras(stake.value));
-    add("No quiero", "quiet", { type: "RESPOND_ENVIDO", accept: false }, `Cedes ${engine.getEnvidoStakes(s.envido.chain).reject}`);
+    add(envidoResponseLabel(true, s.ley.active), "lead", { type: "RESPOND_ENVIDO", accept: true }, piedras(stake.value));
+    add(envidoResponseLabel(false, s.ley.active), "quiet", { type: "RESPOND_ENVIDO", accept: false }, `Cedes ${engine.getEnvidoStakes(s.envido.chain).reject}`);
   }
   for (const choice of legal.florResponses) {
     const rest = calculateFaltaEnvidoPoints(s.scores, s.config);
@@ -77,10 +77,10 @@ export function tableChoices(engine: TrucoEngine, burnMode: boolean): TableChoic
     add(label, choice === "quiero" ? "lead" : choice === "achico" || choice === "no_quiero" ? "quiet" : "call",
       { type: "RESPOND_FLOR", choice }, detail);
   }
-  if (legal.canCallFlor) add(legal.mustCallFlorALey ? "Flor a ley" : "Flor", "lead", { type: "CALL_FLOR" });
+  if (legal.canCallFlor) add("Flor", "lead", { type: "CALL_FLOR" });
   if (legal.canCallTruco && legal.nextTrucoLevel) {
     const level = legal.nextTrucoLevel;
-    add(TRUCO_LEVEL_NAMES[level], choices.some(c => c.tone === "lead") ? "call" : "lead", { type: "CALL_TRUCO" },
+    add(trucoCallLabel(level, s.phase === "AWAITING_TRUCO"), choices.some(c => c.tone === "lead") ? "call" : "lead", { type: "CALL_TRUCO" },
       piedras(getTrucoAcceptPoints(level, s.scores, s.config.targetScore)));
   }
   for (const call of legal.envidoCalls) {
@@ -89,6 +89,6 @@ export function tableChoices(engine: TrucoEngine, burnMode: boolean): TableChoic
   }
   if (legal.canCallALey) add("A ley", "call", { type: "CALL_A_LEY" });
   if (legal.canBurnCard) add(burnMode ? "Cancelar quema" : "Quemar", burnMode ? "lead" : "quiet", { type: "TOGGLE_BURN" });
-  if (legal.canIrseAlMazo) add("Al mazo", "quiet", { type: "IRSE_AL_MAZO" });
+  if (legal.canIrseAlMazo) add("Me voy", "quiet", { type: "IRSE_AL_MAZO" });
   return choices;
 }

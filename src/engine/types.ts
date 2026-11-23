@@ -225,6 +225,16 @@ export const TRUCO_LEVEL_NAMES: Record<TrucoLevel, string> = {
   4: "Vale Juego",
 };
 
+export function trucoCallLabel(level: TrucoLevel, directResponse: boolean): string {
+  const name = TRUCO_LEVEL_NAMES[level];
+  return directResponse && level > 1 ? `Quiero y ${name.toLowerCase()}` : name;
+}
+
+export function envidoResponseLabel(accept: boolean, leyActive: boolean): string {
+  if (leyActive) return accept ? "Sin ley, quiero" : "Sin ley, no quiero";
+  return accept ? "Quiero" : "No quiero";
+}
+
 export function getSeatsForMode(mode: GameMode): PlayerId[] {
   return mode === "2v2" ? ["player", "cpu", "partner", "cpu2"] : ["player", "cpu"];
 }

@@ -10,7 +10,7 @@ describe("Piedras que se muestran en la mesa", () => {
     expect(tableStake(e)).toMatchObject({ name: "Truco", value: 3, status: "Por aceptar", detail: "Mano en juego · 1 piedra" });
     const choices = tableChoices(e, false);
     expect(choices.find(c => c.label === "No quiero")?.detail).toBe("Cedes 1");
-    expect(choices.find(c => c.label === "Retruco")?.detail).toBe("6 piedras");
+    expect(choices.find(c => c.label === "Quiero y retruco")?.detail).toBe("6 piedras");
     e.dispatch("player", { type: "CALL_TRUCO" });
     expect(tableStake(e)).toMatchObject({ name: "Retruco", value: 6, detail: "Mano en juego · 3 piedras" });
     e.dispatch("cpu", { type: "RESPOND_TRUCO", accept: true });

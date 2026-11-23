@@ -15,6 +15,7 @@ import {
 import {
   EnvidoCallType,
   envidoLabel,
+  envidoResponseLabel,
   GameConfig,
   GameEvent,
   GameState,
@@ -28,6 +29,7 @@ import {
   TeamId,
   TrickWinner,
   TRUCO_LEVEL_NAMES,
+  trucoCallLabel,
   TrucoLevel,
 } from "./types.ts";
 
@@ -625,7 +627,7 @@ export class TrucoEngine {
       this.emit(
         actor,
         "response",
-        `${this.actorLabel(actor)} perdió la Flor a ley (${reason}).`,
+        `${this.actorLabel(actor)} perdió la Flor (${reason}).`,
       );
     }
   }
@@ -637,10 +639,6 @@ export class TrucoEngine {
 
     // Cada jugador canta únicamente SU propia Flor (nunca la de su compañero)
     const actualHolder = actor;
-
-    const fromLey =
-      s.ley.hiddenFlorPlayers.includes(actualHolder) &&
-      this.hasPlayedInTrick(actualHolder, 0);
 
     s.ley.hiddenFlorPlayers = s.ley.hiddenFlorPlayers.filter((p) => p !== actualHolder);
     if (s.ley.hiddenFlorPlayers.length === 0) {
@@ -694,8 +692,8 @@ export class TrucoEngine {
       this.emit(
         actualHolder,
         "call",
-        `${this.actorLabel(actualHolder)} canta ¡Flor${fromLey ? " a ley" : ""}!`,
-        fromLey ? "¡FLOR A LEY!" : "¡FLOR!",
+        `${this.actorLabel(actualHolder)} canta ¡Flor!`,
+        "¡FLOR!",
       );
       return;
     }
@@ -718,8 +716,8 @@ export class TrucoEngine {
       this.emit(
         actualHolder,
         "flor_result",
-        `¡${this.actorLabel(actualHolder)} canta ¡Flor${fromLey ? " a ley" : ""}! (Se presenta al final de la mano)`,
-        fromLey ? "¡FLOR A LEY!" : "¡FLOR!",
+        `${this.actorLabel(actualHolder)} canta ¡Flor! (Se presenta al final de la mano)`,
+        "¡FLOR!",
       );
       this.resumePausedTrucoOrContinue();
       return;
@@ -735,13 +733,13 @@ export class TrucoEngine {
       winnerTeam: actorTeam,
       winnerPlayer: actualHolder,
       pointsAwarded: pts,
-      resolutionText: `Flor${fromLey ? " a ley" : ""} de ${this.actorLabel(actualHolder)} (+${pts} piedras)`,
+      resolutionText: `Flor de ${this.actorLabel(actualHolder)} (+${pts} piedras)`,
     };
     this.emit(
       actualHolder,
       "flor_result",
-      `¡${this.actorLabel(actualHolder)} canta Flor${fromLey ? " a ley" : ""}! +${pts} piedras.`,
-      fromLey ? "¡FLOR A LEY!" : "¡FLOR!",
+      `¡${this.actorLabel(actualHolder)} canta Flor! +${pts} piedras.`,
+      "¡FLOR!",
     );
     if (this.addScore(actorTeam, pts)) return;
     this.resumePausedTrucoOrContinue();
@@ -892,6 +890,8 @@ export class TrucoEngine {
     const actorTeam = getPlayerTeam(actor);
     const oppTeam = getOppositeTeam(actorTeam);
     const stakes = this.getEnvidoStakes(s.envido.chain);
+    const label = envidoResponseLabel(accept, s.ley.active);
+    const bubble = `¡${label.toUpperCase()}!`;
 
     s.envido.resolved = true;
     s.envido.accepted = accept;
@@ -903,20 +903,19 @@ export class TrucoEngine {
       this.emit(
         actor,
         "response",
-        `${this.actorLabel(actor)}: "No quiero" al Envido (+${stakes.reject} piedra${stakes.reject > 1 ? "s" : ""} al final de la mano).`,
-        "NO QUIERO",
+        `${this.actorLabel(actor)}: "${label}" al Envido (+${stakes.reject} piedra${stakes.reject > 1 ? "s" : ""} al final de la mano).`,
+        bubble,
       );
       this.resumePausedTrucoOrContinue();
       return;
     }
 
     s.envido.stakedPoints = stakes.accept;
-    const sinLeyPrefix = s.ley.active ? "¡SIN LEY, QUIERO!" : "¡QUIERO!";
     this.emit(
       actor,
       "response",
-      `${this.actorLabel(actor)} acepta el Envido (${stakes.accept} piedras en juego — se resuelve al final de la mano).`,
-      sinLeyPrefix,
+      `${this.actorLabel(actor)}: "${label}" al Envido (${stakes.accept} piedras en juego — se resuelve al final de la mano).`,
+      bubble,
     );
 
     this.resumePausedTrucoOrContinue();
@@ -941,6 +940,7 @@ export class TrucoEngine {
       nextLevel = Math.min(4, s.truco.level + 1) as TrucoLevel;
     }
 
+    const label = trucoCallLabel(nextLevel, s.phase === "AWAITING_TRUCO");
     s.phase = "AWAITING_TRUCO";
     s.truco.pendingLevel = nextLevel;
     s.truco.caller = actor;
@@ -948,20 +948,11 @@ export class TrucoEngine {
     s.truco.responderTeam = oppTeam;
     s.truco.responder = this.pickResponder(oppTeam);
 
-    const shout =
-      nextLevel === 1
-        ? "¡TRUCO!"
-        : nextLevel === 2
-          ? "¡QUIERO RETRUCO!"
-          : nextLevel === 3
-            ? "¡VALE NUEVE!"
-            : "¡VALE JUEGO!";
-
     this.emit(
       actor,
       "call",
-      `${this.actorLabel(actor)} canta ${TRUCO_LEVEL_NAMES[nextLevel]}!`,
-      shout,
+      `${this.actorLabel(actor)} canta ¡${label}!`,
+      `¡${label.toUpperCase()}!`,
     );
   }
 
@@ -1041,7 +1032,7 @@ export class TrucoEngine {
       actor,
       "response",
       `${this.actorLabel(actor)} se va al mazo.`,
-      "ME VOY AL MAZO",
+      "¡ME VOY!",
     );
     this.finishHand(oppTeam, pts, `${this.teamLabel(actorTeam)} se fue al mazo`);
   }

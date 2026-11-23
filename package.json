@@ -9,6 +9,7 @@
     "preview": "bunx --bun vite preview",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
+    "audio:cantos": "bun scripts/generate-cantos.ts",
     "supabase:login": "supabase login",
     "supabase:link": "supabase link --project-ref wdkjsgpluzhhqpnrskqx",
     "supabase:db:push": "supabase db push",
