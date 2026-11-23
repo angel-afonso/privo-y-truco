@@ -6,6 +6,7 @@ export interface PersistedIdentity {
 }
 
 export interface PersistedRoomSession {
+  backend?: "server" | "realtime";
   roomCode: string;
   name: string;
   seat: PlayerId | null;

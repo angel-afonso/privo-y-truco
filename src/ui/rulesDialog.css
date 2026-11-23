@@ -1,0 +1,20 @@
+.rules-dialog {
+  margin: auto; width: min(36rem, calc(100% - 24px)); max-width: none;
+  max-height: calc(100dvh - 24px); padding: 0;
+  background: #10291f; color: #f3ebd9; border: 1px solid #8b7951; border-radius: 10px;
+}
+.rules-dialog[open] { display: flex; flex-direction: column; }
+.rules-dialog::backdrop { background: #05140dbd; }
+.rules-dialog h2 { padding: 18px 20px; font: 700 22px/1.2 "Fraunces", Georgia, serif; }
+.rules-body {
+  overflow-y: auto; overscroll-behavior: contain; padding: 16px 20px;
+  border-block: 1px solid #54634d; line-height: 1.55; font-size: 15px;
+}
+.rules-body h3 { font-size: 13px; line-height: 1.4; color: #e5c58c; margin-bottom: 4px; }
+.rules-body p + h3 { margin-top: 18px; }
+.rules-dialog form { padding: 12px 20px; }
+.rules-dialog button {
+  width: 100%; min-height: 46px; border: 0; border-radius: 4px;
+  background: #ddbd7b; color: #213128; font-size: 15px; font-family: inherit; font-weight: 700; cursor: pointer;
+}
+.rules-dialog :focus-visible { outline: 2px solid #dfbc77; outline-offset: -3px; }

@@ -28,7 +28,9 @@ const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const DISCONNECT_BOT_TAKEOVER_MS = 14_000;
 
 interface RoomRow {
+  invite_code: string;
   code: string;
+  visibility: "public" | "private";
   status: "lobby" | "playing" | "finished";
   config: GameConfig;
   version: number;
@@ -114,6 +116,8 @@ function buildClientPayload(room: RoomRow, players: PlayerRow[], caller: PlayerR
   return {
     ok: true,
     roomCode: room.code,
+    ...(caller?.is_host && room.status === "lobby" ? { inviteCode: room.invite_code } : {}),
+    visibility: room.visibility,
     status: room.status,
     config: room.config,
     version: room.version,
@@ -153,9 +157,16 @@ Deno.serve(async (req) => {
       return jsonResponse({ ok: true, mode: "server" });
     }
 
+    if (op === "list_public_rooms") {
+      const { data, error } = await db.from("truco_open_rooms")
+        .select("code,host,config,occupied").order("created_at", { ascending: false }).limit(100);
+      if (error) return jsonResponse({ ok: false, error: "No se pudieron consultar las salas." }, 503);
+      return jsonResponse({ ok: true, rooms: data });
+    }
+
     const clientId = String(body.clientId ?? "").trim();
     const playerSecret = String(body.playerSecret ?? "").trim();
-    const roomCode = String(body.roomCode ?? "")
+    let roomCode = String(body.roomCode ?? "")
       .toUpperCase()
       .replace(/[^A-Z0-9]/g, "")
       .slice(0, 8);
@@ -165,7 +176,7 @@ Deno.serve(async (req) => {
     }
 
     // 1) CREAR SALA
-    if (op === "create_room") {
+    if (op === "create_room" || op === "create_public_room") {
       const name = String(body.name ?? "Anfitrión").trim().slice(0, 16) || "Anfitrión";
       const config: GameConfig = {
         mode: body.config?.mode === "2v2" ? "2v2" : "1v1",
@@ -176,7 +187,7 @@ Deno.serve(async (req) => {
 
       const { data: room, error: roomErr } = await db
         .from("truco_rooms")
-        .insert({ code, status: "lobby", config, version: 1, canonical_state: null })
+        .insert({ code, visibility: op === "create_public_room" ? "public" : "private", status: "lobby", config, version: 1, canonical_state: null })
         .select()
         .single<RoomRow>();
       if (roomErr || !room) {
@@ -206,6 +217,43 @@ Deno.serve(async (req) => {
       return jsonResponse({ ok: false, error: "Código de sala requerido" }, 400);
     }
 
+    if (op === "leave_room") {
+      const { data, error } = await db.rpc("truco_leave_room", {
+        p_code: roomCode, p_client: clientId, p_secret: playerSecret,
+      });
+      if (error) return jsonResponse({ ok: false, error: "No se pudo salir de la sala." }, 503);
+      if (!data) return jsonResponse({ ok: false, error: "No autorizado en esta sala." }, 403);
+      return jsonResponse({ ok: true });
+    }
+
+    if (op === "get_chat" || op === "send_chat") {
+      const sending = op === "send_chat";
+      const message = typeof body.text === "string" ? body.text.trim() : "";
+      if (sending && (!message || message.length > 400 || typeof body.id !== "string" || !/^[a-zA-Z0-9-]{1,64}$/.test(body.id))) {
+        return jsonResponse({ ok: false, error: "El mensaje debe tener entre 1 y 400 caracteres." }, 400);
+      }
+      const { data, error } = await db.rpc("truco_chat", {
+        p_code: roomCode, p_client: clientId, p_secret: playerSecret,
+        p_id: sending ? body.id : null, p_text: sending ? message : null,
+      });
+      if (error) {
+        const forbidden = error.code === "42501";
+        return jsonResponse({ ok: false, error: forbidden ? "Solo los jugadores de la sala pueden entrar al chat." :
+          "No se pudo conectar con el chat." }, forbidden ? 403 : 503);
+      }
+      return jsonResponse({ ok: true, chat: data });
+    }
+
+    if (op === "join_room") {
+      const name = String(body.name ?? "Invitado").trim().slice(0, 16) || "Invitado";
+      const { data, error } = await db.rpc("truco_redeem_invite", {
+        p_invite: roomCode, p_client_id: clientId, p_secret: playerSecret, p_name: name,
+      });
+      if (error) return jsonResponse({ ok: false, error: "No se pudo confirmar la invitación." }, 503);
+      if (!data) return jsonResponse({ ok: false, error: "Invitación usada o sin puesto disponible." }, 404);
+      roomCode = data;
+    }
+
     // Cargar sala + jugadores existentes
     const [{ data: room, error: rErr }, { data: playersList, error: pErr }] = await Promise.all([
       db.from("truco_rooms").select("*").eq("code", roomCode).maybeSingle<RoomRow>(),
@@ -222,7 +270,10 @@ Deno.serve(async (req) => {
     let caller = players.find((p) => p.client_id === clientId) ?? null;
 
     // 2) UNIRSE O RECONECTAR
-    if (op === "join_room" || op === "reconnect") {
+    if (op === "join_room" || op === "join_public_room" || op === "reconnect") {
+      if (op === "join_public_room" && room.visibility !== "public") {
+        return jsonResponse({ ok: false, error: "La sala ya no está disponible." }, 404);
+      }
       const name = String(body.name ?? "Invitado").trim().slice(0, 16) || "Invitado";
 
       if (caller) {
@@ -244,29 +295,19 @@ Deno.serve(async (req) => {
         return jsonResponse({ ok: false, error: "Sesión anterior no encontrada en esta sala." }, 404);
       }
 
-      // Nuevo invitado -> asignar primer asiento libre
-      const validSeats = getSeatsForMode(room.config.mode);
-      const taken = new Set(players.map((p) => p.seat).filter(Boolean));
-      const freeSeat = validSeats.find((s) => !taken.has(s)) ?? null;
-
-      const { data: inserted, error: insErr } = await db
-        .from("truco_room_players")
-        .insert({
-          room_code: roomCode,
-          client_id: clientId,
-          player_secret: playerSecret,
-          name,
-          seat: freeSeat,
-          is_host: players.length === 0,
-        })
-        .select()
-        .single<PlayerRow>();
-      if (insErr || !inserted) {
-        return jsonResponse({ ok: false, error: insErr?.message ?? "No se pudo unir" }, 500);
+      if (op === "join_public_room") {
+        const { data: admitted, error } = await db.rpc("truco_join_open_room", {
+          p_code: roomCode, p_client_id: clientId, p_secret: playerSecret, p_name: name,
+        });
+        if (error) return jsonResponse({ ok: false, error: "No se pudo reservar el puesto." }, 503);
+        if (!admitted) return jsonResponse({ ok: false, error: "Esta mesa ya no tiene puestos disponibles." }, 409);
+        const { data: members, error: membersErr } = await db.from("truco_room_players")
+          .select("*").eq("room_code", roomCode).order("joined_at").returns<PlayerRow[]>();
+        if (membersErr || !members) return jsonResponse({ ok: false, error: "No se pudo cargar la mesa." }, 503);
+        return jsonResponse(buildClientPayload(room, members, members.find(p => p.client_id === clientId) ?? null));
       }
 
-      players = [...players, inserted];
-      return jsonResponse(buildClientPayload(room, players, inserted));
+      return jsonResponse({ ok: false, error: "La invitación ya no está disponible." }, 409);
     }
 
     // Todas las operaciones siguientes requieren estar autenticado en la sala
@@ -374,8 +415,8 @@ Deno.serve(async (req) => {
     }
 
     async function saveMove(current: RoomRow, state: GameState) {
-      const changes = {
-        status: state.phase === "MATCH_OVER" ? "finished" as const : "playing" as const,
+      const changes: Pick<RoomRow, "status" | "version" | "canonical_state"> = {
+        status: state.phase === "MATCH_OVER" ? "finished" : "playing",
         version: current.version + 1,
         canonical_state: state,
       };
@@ -437,26 +478,6 @@ Deno.serve(async (req) => {
         return await saveMove(room, engine.getState());
       }
       return jsonResponse(buildClientPayload(room, players, caller));
-    }
-
-    // 9) SALIR DE LA SALA (con migración automática de host si queda alguien)
-    if (op === "leave_room") {
-      await db
-        .from("truco_room_players")
-        .delete()
-        .eq("room_code", roomCode)
-        .eq("client_id", clientId);
-
-      const remaining = players.filter((p) => p.client_id !== clientId);
-      if (caller.is_host && remaining.length > 0) {
-        await db
-          .from("truco_room_players")
-          .update({ is_host: true })
-          .eq("room_code", roomCode)
-          .eq("client_id", remaining[0].client_id);
-      }
-      await db.from("truco_rooms").update({ version: room.version + 1 }).eq("code", roomCode).eq("version", room.version);
-      return jsonResponse({ ok: true });
     }
 
     return jsonResponse({ ok: false, error: `Operación desconocida: ${op}` }, 400);

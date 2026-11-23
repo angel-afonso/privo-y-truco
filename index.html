@@ -1,10 +1,14 @@
 <!doctype html>
-<html lang="es">
+<html lang="es" data-type="software">
   <head>
     <meta charset="UTF-8" />
+    <meta name="page-type" content="software" />
+    <meta name="site-kind" content="gaming" />
+    <meta name="theme-color" content="#102c23" />
+    <meta name="description" content="Juega truco venezolano individual o por parejas, con vira y partidas a 12 o 24 piedras." />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+      content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content"
     />
     <title>Truco Venezolano — Baraja Española</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -40,7 +44,7 @@
     </style>
   </head>
   <body>
-    <div id="app"></div>
+    <main id="app" aria-label="Mesa de truco venezolano"></main>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

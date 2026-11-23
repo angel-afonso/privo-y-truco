@@ -29,7 +29,16 @@ export interface GameConfig {
 
 export type TrucoLevel = 0 | 1 | 2 | 3 | 4;
 
-export type EnvidoCallType = "envido" | "real_envido" | "falta_envido";
+export type EnvidoCallType = "envido" | "envido_cinco" | "falta_envido" | "real_envido";
+
+export function envidoLabel(call: EnvidoCallType, isRaise = false): string {
+  switch (call) {
+    case "envido": return isRaise ? "Quiero y envido" : "Envido";
+    case "envido_cinco": return "Envido 5 piedras";
+    case "falta_envido": return isRaise ? "Quiero y la falta" : "Envido la falta";
+    case "real_envido": return "Real envido"; // Cantos pendientes de versiones anteriores.
+  }
+}
 
 export type FlorStage =
   | "none"
@@ -92,6 +101,7 @@ export interface FlorState {
   winnerPlayer?: PlayerId;
   pendingSettlement?: boolean;
   stakedPoints?: number;
+  rejectPoints?: number;
   pointsAwarded: number;
   nosotrosPoints?: number;
   nosotrosBestPlayer?: PlayerId;

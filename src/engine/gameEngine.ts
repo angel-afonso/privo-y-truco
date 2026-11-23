@@ -14,6 +14,7 @@ import {
 } from "./evaluator.ts";
 import {
   EnvidoCallType,
+  envidoLabel,
   GameConfig,
   GameEvent,
   GameState,
@@ -397,7 +398,7 @@ export class TrucoEngine {
 
       const envidoCalls: EnvidoCallType[] =
         canFirstTrickInterrupt && !actorHasEligibleFlor
-          ? ["envido", "real_envido", "falta_envido"]
+          ? ["envido", "envido_cinco", "falta_envido"]
           : [];
 
       return {
@@ -432,7 +433,7 @@ export class TrucoEngine {
         !s.envido.resolved &&
         !s.flor.resolved &&
         !hasActorFlor
-          ? ["envido", "real_envido", "falta_envido"]
+          ? ["envido", "envido_cinco", "falta_envido"]
           : [];
 
       const canRaiseTruco =
@@ -459,36 +460,30 @@ export class TrucoEngine {
   }
 
   private getEnvidoEscalations(chain: EnvidoCallType[]): EnvidoCallType[] {
-    if (chain.length === 0) return ["envido", "real_envido", "falta_envido"];
+    if (chain.length === 0) return ["envido", "envido_cinco", "falta_envido"];
     const last = chain[chain.length - 1];
     if (last === "falta_envido") return [];
-    if (last === "real_envido") return ["falta_envido"];
+    if (last === "envido_cinco" || last === "real_envido") return ["falta_envido"];
     const envidoCount = chain.filter((c) => c === "envido").length;
     if (envidoCount < 2) {
-      return ["envido", "real_envido", "falta_envido"];
+      return ["envido", "envido_cinco", "falta_envido"];
     }
-    return ["real_envido", "falta_envido"];
+    return ["envido_cinco", "falta_envido"];
   }
 
   public getEnvidoStakes(chain: EnvidoCallType[]): { accept: number; reject: number } {
     if (chain.length === 0) return { accept: 0, reject: 0 };
-    const callValue = (c: EnvidoCallType): number => {
-      if (c === "envido") return 2;
-      if (c === "real_envido") return 3;
-      return calculateFaltaEnvidoPoints(this.state.scores, this.state.config);
-    };
-
-    const reject =
-      chain.length === 1
-        ? 1
-        : chain.slice(0, -1).reduce((sum, c) => sum + callValue(c), 0);
-
-    const last = chain[chain.length - 1];
-    const accept =
-      last === "falta_envido"
-        ? calculateFaltaEnvidoPoints(this.state.scores, this.state.config)
-        : chain.reduce((sum, c) => sum + callValue(c), 0);
-
+    let accept = 0;
+    let reject = 1;
+    for (const call of chain) {
+      reject = accept || 1;
+      switch (call) {
+        case "envido": accept += 2; break;
+        case "envido_cinco": accept = 5; break;
+        case "falta_envido": accept = calculateFaltaEnvidoPoints(this.state.scores, this.state.config); break;
+        case "real_envido": accept += 3; break;
+      }
+    }
     return { accept, reject };
   }
 
@@ -766,12 +761,12 @@ export class TrucoEngine {
       s.flor.winnerTeam = oppTeam;
       s.flor.winnerPlayer = s.flor.caller;
       s.flor.pointsAwarded = pts;
-      s.flor.resolutionText = `${this.actorLabel(actor)} se achica con flor. ${this.teamLabel(oppTeam)} gana +${pts} piedras.`;
+      s.flor.resolutionText = `${this.actorLabel(actor)} declina el envite con flor. ${this.teamLabel(oppTeam)} gana +${pts} piedras.`;
       this.emit(
         actor,
         "flor_result",
-        `${this.actorLabel(actor)}: "¡Con flor me achico!". ${this.teamLabel(oppTeam)} suma +${pts} piedras.`,
-        "¡CON FLOR ME ACHICO!",
+        `${this.actorLabel(actor)}: "¡Con flor no quiero!". ${this.teamLabel(oppTeam)} suma +${pts} piedras.`,
+        "¡CON FLOR NO QUIERO!",
       );
       if (this.addScore(oppTeam, pts)) return;
       this.resumePausedTrucoOrContinue();
@@ -779,6 +774,8 @@ export class TrucoEngine {
     }
 
     if (choice === "contraflor") {
+      s.flor.stakedPoints = 5;
+      s.flor.rejectPoints = 4;
       s.flor.stage = "contraflor";
       s.flor.caller = actor;
       s.flor.callerTeam = actorTeam;
@@ -787,13 +784,15 @@ export class TrucoEngine {
       this.emit(
         actor,
         "call",
-        `${this.actorLabel(actor)} canta ¡Contraflor! (6 piedras)`,
-        "¡CONTRAFLOR!",
+        `${this.actorLabel(actor)} canta ¡Con flor envido! (5 piedras)`,
+        "¡CON FLOR ENVIDO!",
       );
       return;
     }
 
     if (choice === "contraflor_resto") {
+      s.flor.rejectPoints = s.flor.stage === "flor" ? 4 : s.flor.stakedPoints ?? 6;
+      s.flor.stakedPoints = calculateFaltaEnvidoPoints(s.scores, s.config);
       s.flor.stage = "contraflor_resto";
       s.flor.caller = actor;
       s.flor.callerTeam = actorTeam;
@@ -802,19 +801,19 @@ export class TrucoEngine {
       this.emit(
         actor,
         "call",
-        `${this.actorLabel(actor)} canta ¡Contraflor al Resto!`,
-        "¡CONTRAFLOR AL RESTO!",
+        `${this.actorLabel(actor)} canta ¡Con flor envido la falta!`,
+        "¡CON FLOR ENVIDO LA FALTA!",
       );
       return;
     }
 
     if (choice === "no_quiero") {
-      const pts = s.flor.stage === "contraflor_resto" ? 6 : 4;
+      const pts = s.flor.rejectPoints ?? (s.flor.stage === "contraflor_resto" ? 6 : 4);
       s.flor.resolved = true;
       s.flor.winnerTeam = oppTeam;
       s.flor.winnerPlayer = s.flor.caller;
       s.flor.pointsAwarded = pts;
-      s.flor.resolutionText = `${this.actorLabel(actor)} no quiere la Contraflor. ${this.teamLabel(oppTeam)} suma +${pts} piedras.`;
+      s.flor.resolutionText = `${this.actorLabel(actor)} no quiere el envite con flor. ${this.teamLabel(oppTeam)} suma +${pts} piedras.`;
       this.emit(
         actor,
         "flor_result",
@@ -827,10 +826,10 @@ export class TrucoEngine {
     }
 
     // choice === "quiero" -> queda pactada y se descubre al final de la mano
-    const pts =
+    const pts = s.flor.stakedPoints ?? (
       s.flor.stage === "contraflor_resto"
         ? calculateFaltaEnvidoPoints(s.scores, s.config)
-        : 6;
+        : 6);
 
     s.flor.resolved = true;
     s.flor.pendingSettlement = true;
@@ -882,20 +881,8 @@ export class TrucoEngine {
     const withLeyPrefix =
       s.ley.declaredBy.includes(actor) && s.envido.chain.length === 1;
 
-    const baseLabel =
-      call === "envido"
-        ? s.envido.chain.length > 1
-          ? "¡ENVIDO OTRA VEZ!"
-          : withLeyPrefix
-            ? "¡A LEY, ENVIDO!"
-            : "¡ENVIDO!"
-        : call === "real_envido"
-          ? withLeyPrefix
-            ? "¡A LEY, REAL ENVIDO!"
-            : "¡REAL ENVIDO!"
-          : withLeyPrefix
-            ? "¡A LEY, FALTA ENVIDO!"
-            : "¡FALTA ENVIDO!";
+    const canto = envidoLabel(call, s.envido.chain.length > 1);
+    const baseLabel = `¡${withLeyPrefix ? "A LEY, " : ""}${canto.toUpperCase()}!`;
 
     this.emit(actor, "call", `${this.actorLabel(actor)} canta ${baseLabel}`, baseLabel);
   }
@@ -1252,14 +1239,14 @@ export class TrucoEngine {
           !nFlor.isReservada && !eFlor.isReservada && nFlor.points === eFlor.points
             ? " (Mano)"
             : "";
-        s.flor.resolutionText = `Contraflor: ${this.teamLabel("nosotros")} ${nDesc} vs ${this.teamLabel("ellos")} ${eDesc}${tieNote} → ${this.teamLabel(florWinnerTeam)} (+${pts})`;
+        s.flor.resolutionText = `Envite con flor: ${this.teamLabel("nosotros")} ${nDesc} vs ${this.teamLabel("ellos")} ${eDesc}${tieNote} → ${this.teamLabel(florWinnerTeam)} (+${pts})`;
 
         if (this.addScore(florWinnerTeam, pts)) {
           s.handSummary = {
             trickWinnerTeam: florWinnerTeam,
             trucoPoints: 0,
             florText: s.flor.resolutionText,
-            reason: `${this.teamLabel(florWinnerTeam)} cierra la partida con la Contraflor`,
+            reason: `${this.teamLabel(florWinnerTeam)} cierra la partida con el envite de flor`,
           };
           return;
         }

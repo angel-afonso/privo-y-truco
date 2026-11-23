@@ -12,6 +12,7 @@ export const Easing = {
 };
 
 export interface TweenTarget {
+  destroyed?: boolean;
   x?: number;
   y?: number;
   alpha?: number;
@@ -85,6 +86,7 @@ export class TweenManager {
     const completed: Array<() => void> = [];
 
     for (const tw of this.tweens) {
+      if (tw.target.destroyed) continue;
       tw.elapsed += deltaMS;
       const rawT = Math.min(1, tw.elapsed / tw.duration);
       const t = tw.easing(rawT);

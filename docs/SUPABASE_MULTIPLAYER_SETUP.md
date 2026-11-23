@@ -18,8 +18,13 @@ La app funciona automáticamente en **dos modos**:
 ## Pasos para activar el Modo Servidor Autoritativo (2 minutos)
 
 ### Paso 1: Crear las tablas y políticas RLS en Postgres
-Abre **Supabase Dashboard → SQL Editor**, pega y ejecuta el contenido completo de:
-- `supabase/migrations/001_truco_multiplayer.sql`
+Aplica las migraciones pendientes en este orden desde **Supabase Dashboard → SQL Editor** o ejecuta `supabase db push` con el proyecto vinculado.
+
+1. `supabase/migrations/001_truco_multiplayer.sql` crea las salas y los jugadores.
+2. `supabase/migrations/002_public_rooms.sql` habilita las salas abiertas. Las salas existentes conservan acceso privado por código.
+3. `supabase/migrations/003_host_invitations.sql` separa el código de invitación del identificador de sala y renueva la invitación tras cada uso.
+4. `supabase/migrations/004_room_chat.sql` habilita el chat de la mesa y conserva sus últimos 50 mensajes.
+5. `supabase/migrations/005_close_empty_room.sql` elimina la sala y su chat cuando el último jugador elige salir.
 
 ### Paso 2: Desplegar la Edge Function `truco-game`
 Desde la raíz del proyecto (con la CLI de Supabase):
@@ -33,4 +38,4 @@ supabase functions deploy truco-game --no-verify-jwt
 > Nota: `--no-verify-jwt` permite jugar salas rápidas con invitados anónimos autenticados por `clientId + playerSecret` por sesión; la función valida internamente cada token en `truco_room_players` usando `SUPABASE_SERVICE_ROLE_KEY`.
 
 ### Paso 3: Verificar
-Al recargar la app y crear o unirte a una sala en **Online**, el lobby mostrará automáticamente **`Servidor Postgres · Anti-trampa activo`**.
+Desde **Crear sala**, elige **Abierta**. Abre la portada en otro navegador y entra desde **Salas abiertas**. Para jugar por invitación, elige **Privada**. Desde la mesa, el anfitrión puede copiar un enlace o compartir el código de un uso con el siguiente jugador. El directorio requiere la base de datos y la función actualizadas. El modo Realtime por sí solo admite las salas privadas.

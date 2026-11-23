@@ -96,7 +96,7 @@ export function buildPartnerEnvidoAdvice(state: GameState): PartnerMessage {
   const chain = state.envido.chain;
   const lastCall = chain[chain.length - 1];
   const isFalta = lastCall === "falta_envido";
-  const isRealOrDouble = lastCall === "real_envido" || chain.length >= 2;
+  const isRaisedEnvido = lastCall === "envido_cinco" || lastCall === "real_envido" || chain.length >= 2;
   const awaitingEnvido = state.phase === "AWAITING_ENVIDO";
 
   if (state.envido.resolved && !awaitingEnvido) {
@@ -120,7 +120,7 @@ export function buildPartnerEnvidoAdvice(state: GameState): PartnerMessage {
     if (pts >= 30) {
       return {
         headline: `Tengo ${pts}${isOurMano ? " (Mano)" : ""} · Se puede querer`,
-        detail: `Tu compañero tiene ${pts}${manoTag}. Competitivo para Falta Envido.`,
+        detail: `Tu compañero tiene ${pts}${manoTag}. Competitivo para envidar la falta.`,
         tone: "strong",
       };
     }
@@ -145,7 +145,7 @@ export function buildPartnerEnvidoAdvice(state: GameState): PartnerMessage {
     };
   }
 
-  if (isRealOrDouble) {
+  if (isRaisedEnvido) {
     if (pts >= 33) {
       return {
         headline: `Tengo ${pts} · Quiere o sube`,
@@ -321,14 +321,14 @@ export function buildPartnerFlorAdvice(state: GameState): PartnerMessage {
   if (pFlor.hasFlor) {
     if (pFlor.isReservada) {
       return {
-        headline: "Perico y Perica · Contraflor al Resto",
-        detail: "Tu compañero lleva Flor Reservada: imbatible, dale Contraflor al Resto.",
+        headline: "Perico y Perica · Con flor envido la falta",
+        detail: "Tu compañero lleva Flor Reservada: imbatible, dale Con flor envido la falta.",
         tone: "flor",
       };
     }
     if (pFlor.points >= 34) {
       return {
-        headline: `Tengo Flor de ${pFlor.points} · Contraflor`,
+        headline: `Tengo Flor de ${pFlor.points} · Con flor envido`,
         detail: `Tu compañero lleva una Flor muy alta (${pFlor.points} pts).`,
         tone: "flor",
       };
@@ -342,7 +342,7 @@ export function buildPartnerFlorAdvice(state: GameState): PartnerMessage {
     }
     return {
       headline: `Mi Flor es baja (${pFlor.points}) · Evalúa achicarte`,
-      detail: `Tu compañero tiene Flor de ${pFlor.points} pts (baja para Contraflor).`,
+      detail: `Tu compañero tiene Flor de ${pFlor.points} pts (baja para envidar con flor).`,
       tone: "weak",
     };
   }

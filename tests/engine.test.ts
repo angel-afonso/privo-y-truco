@@ -23,6 +23,7 @@ import {
 import { Card, Rank, Suit } from "../src/engine/types";
 import {
   buildSafeViewerState,
+  formatOnlineSummaryText,
   isHiddenCardId,
   mapSeatToViewer,
   mapViewerToCanonicalSeat,
@@ -380,7 +381,7 @@ describe("Flujo de Juego 1 vs 1, Cantos y Escaladas", () => {
     expect(engine.getState().scores.nosotros).toBe(6);
   });
 
-  test("Con Flor Reservada ante rival con Flor, el canto dice '¡FLOR!' y permite atrapar en Contraflor", () => {
+  test("Con Flor Reservada ante rival con Flor, el canto dice '¡FLOR!' y permite envidar con flor", () => {
     const engine = new TrucoEngine(
       { mode: "1v1", targetScore: 24, withFlor: true },
       {
@@ -398,15 +399,15 @@ describe("Flujo de Juego 1 vs 1, Cantos y Escaladas", () => {
     expect(engine.getState().lastEvent?.bubble).toBe("¡FLOR!");
     expect(engine.getState().phase).toBe("AWAITING_FLOR");
 
-    // Rival cae en la trampa y canta Contraflor, jugador acepta
+    // El rival envida con flor y el jugador acepta
     engine.dispatch("cpu", { type: "RESPOND_FLOR", choice: "contraflor" });
     engine.dispatch("player", { type: "RESPOND_FLOR", choice: "quiero" });
     expect(engine.getState().flor.pendingSettlement).toBe(true);
 
-    // Al cerrar la mano, Flor Reservada vence a la Flor de 38 (+6 de Contraflor)
+    expect(engine.getState().flor.stakedPoints).toBe(5);
     engine.dispatch("player", { type: "IRSE_AL_MAZO" });
     expect(engine.getState().flor.winnerTeam).toBe("nosotros");
-    expect(engine.getState().scores.nosotros).toBe(6);
+    expect(engine.getState().scores.nosotros).toBe(5);
   });
 
   test("Partida completa simulada 1 vs 1 termina sin bloqueos", () => {
@@ -1016,5 +1017,23 @@ describe("Multijugador Online (Proyección de Perspectiva y Sincronización)", (
     expect(dealerJson).not.toContain("6_oros");
     expect(dealerJson).not.toContain("1_espadas");
     expect(dealerJson).not.toContain("3_espadas");
+  });
+});
+
+describe("Nombres en resúmenes online", () => {
+  test("Un invitado 1v1 ve los nombres correctos incluso cuando el apodo contiene CPU", () => {
+    const label = (seat: string) => seat === "player" ? "Ana" : "CPU Junior";
+    const text = "Envido: Tú 28 vs CPU 31 → CPU (+2)";
+    expect(formatOnlineSummaryText(text, "1v1", "cpu", label))
+      .toBe("Envido: CPU Junior 28 vs Ana 31 → Ana (+2)");
+  });
+
+  test("La contraflor y las parejas se leen desde la posición del invitado", () => {
+    const names = { player: "Ana", cpu: "Luis", partner: "José", cpu2: "Marta" };
+    const text = "Compañero no quiere la Contraflor. Ellos suma +6 piedras.";
+    expect(formatOnlineSummaryText(text, "2v2", "cpu", seat => names[seat]))
+      .toBe("Luis no quiere la Contraflor. Nuestro equipo suma +6 piedras.");
+    expect(formatOnlineSummaryText("Nosotros gana el lance del Truco", "2v2", "cpu", seat => names[seat]))
+      .toBe("El equipo rival gana el lance del Truco");
   });
 });

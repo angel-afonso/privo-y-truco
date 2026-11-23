@@ -150,9 +150,9 @@ Si ambos equipos empatan en puntaje exacto (por ejemplo, ambos tienen `31`), **g
 | Canto / Escalada | Si se dice *"Quiero"* (ganador) | Si se dice *"No quiero"* (quien cantó) |
 | :--- | :---: | :---: |
 | **Envido** | **2 piedras** | **1 piedra** |
-| **Envido → Envido** *(Doble Envido)* | **4 piedras** | **2 piedras** |
-| **Real Envido** *(opcional/variante)* | **3 piedras** *(o +3 acumulado)* | **1 piedra** *(o acumulado previo)* |
-| **Envido al Resto / Falta Envido** | Piedras que le faltan al equipo que va **ganando** para llegar a la meta (24, o 12 si están en malas*) | Piedras del nivel anterior (1, 2 o 4) |
+| **Envido → Quiero y envido** | **4 piedras** | **2 piedras** |
+| **Envido 5 piedras** | **5 piedras en total**, de entrada o como subida | **1** de entrada, **2** sobre envido o **4** sobre quiero y envido |
+| **Envido la falta** | Piedras que le faltan al equipo que va **ganando** para llegar a la meta configurada (12 o 24) | Piedras del nivel anterior (1 de entrada, o 2, 4 o 5) |
 
 > *Nota sobre Falta Envido en Malas y Buenas:* En la regla tradicional venezolana, si el equipo líder aún está en **malas** (< 12 piedras), la falta suele valer lo que le falta para llegar a 12 (entrar en buenas) o directamente lo que le falta para 24 según acuerdo de mesa. Conviene hacerlo configurable en el menú de partida.
 
@@ -192,11 +192,10 @@ Un jugador tiene Flor si cumple cualquiera de estos 3 casos:
 | Situación / Canto | Quién responde | Piedras en juego |
 | :--- | :--- | :--- |
 | **¡Flor!** (el rival no tiene Flor) | Rival no tiene flor | **3 piedras** para quien cantó. |
-| **Flor Reservada** *(NO se canta "Flor Reservada")* | Ningún rival puede igualarla | **5 piedras**; se guarda en silencio hasta el final de la mano (o se responde simplemente *"¡Flor!"* / *"¡Contraflor!"* sin delatar las piezas). |
-| **Con Flor Me Achico** | Rival también tiene Flor, pero decide no disputarla | **4 piedras** para quien cantó primero *(3 de su flor + 1 por achicarse el rival)*. |
-| **Con Flor Quiero / Contraflor** | Rival también tiene Flor y reta a comparar puntos | **6 piedras** al ganador *(si el primero dice "No quiero", el retador se lleva 4 piedras)*. |
-| **Con Flor Envido** *(variante tradicional)* | Rival con flor reta sumando el valor de envido | **5 a 6 piedras** al ganador (según regla de mesa). |
-| **Contraflor al Resto / Con Flor Vale Juego** | Apuesta máxima entre flores | El ganador se lleva las **piedras restantes del partido** *(si no quiere, el retador se lleva 6 piedras)*. |
+| **Flor Reservada** *(NO se canta "Flor Reservada")* | Ningún rival puede igualarla | **5 piedras**; se guarda en silencio hasta el final de la mano (o se responde simplemente *"¡Flor!"* / *"¡Con flor envido!"* sin delatar las piezas). |
+| **Con flor no quiero** | Rival también tiene Flor, pero decide no disputarla | **4 piedras** para quien cantó primero *(3 de su flor + 1 por achicarse el rival)*. |
+| **Con flor envido** | Rival también tiene flor y reta a comparar tantos | **5 piedras** (3 por flor y 2 por envite). Si se rechaza, el retador cobra 4. |
+| **Con flor envido la falta** | Apuesta máxima entre flores | Las piedras que faltan al equipo que va adelante. Si se rechaza, se cobran 4 al abrir el envite con la falta o 5 al subir desde «Con flor envido». |
 
 ---
 
@@ -291,5 +290,5 @@ Antes de escribir código, se recomienda separar estrictamente la **lógica del 
 - **Animaciones:** Reparto desde el mazo, volteo de la Vira, *hover* y levantamiento de cartas en mano, lanzamiento con rotación natural sobre la mesa, volteo para cartas quemadas.
 - **UI de Cantos y Marcador:**
   - Botonera contextual que solo muestra cantos válidos según el estado actual (`Envido`, `Flor`, `Truco`, `Retruco`, `Vale Nueve`, `Vale Juego`, `Quiero`, `No Quiero`, `Al Mazo`).
-  - Globos de diálogo animados con la jerga venezolana (*"¡Truco!"*, *"¡Quiero Retruco!"*, *"¡Flor Reservada!"*, *"¡Con Flor Me Achico!"*).
+  - Globos de diálogo animados con la jerga venezolana (*"¡Truco!"*, *"¡Quiero Retruco!"*, *"¡Envido 5 piedras!"*, *"¡Con flor envido!"*).
   - Marcador visual de **Piedras** dividido en **Malas (1–12)** y **Buenas (13–24)**.

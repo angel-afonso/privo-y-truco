@@ -1,9 +1,12 @@
 import {
   Card,
   GameEvent,
+  GameMode,
   GameState,
   getOppositeTeam,
+  getPlayerLabel,
   getPlayerTeam,
+  getSeatsForMode,
   PlayerId,
   TeamId,
   TrickState,
@@ -56,6 +59,27 @@ export function mapViewerToCanonicalSeat(
 
 export function mapTeamToViewer(team: TeamId, viewerSeat: PlayerId): TeamId {
   return getPlayerTeam(viewerSeat) === "nosotros" ? team : getOppositeTeam(team);
+}
+
+// Los resúmenes persistidos contienen las etiquetas del motor en el orden canónico.
+export function formatOnlineSummaryText(
+  text: string,
+  mode: GameMode,
+  viewerSeat: PlayerId,
+  seatLabel: (seat: PlayerId) => string,
+): string {
+  const seats = getSeatsForMode(mode);
+  const labels = new Map<string, string>();
+  for (const seat of seats) {
+    labels.set(getPlayerLabel(seat, mode), seatLabel(mapSeatToViewer(seat, viewerSeat, seats)));
+  }
+  if (mode === "2v2") {
+    const sameTeam = getPlayerTeam(viewerSeat) === "nosotros";
+    labels.set("Nosotros", sameTeam ? "Nuestro equipo" : "El equipo rival");
+    labels.set("Ellos", sameTeam ? "El equipo rival" : "Nuestro equipo");
+  }
+  // Una sola pasada conserva incluso un apodo que contiene otra etiqueta, como “CPU Junior”.
+  return text.replace(new RegExp([...labels.keys()].join("|"), "gu"), (label) => labels.get(label)!);
 }
 
 function mapTrickWinner(

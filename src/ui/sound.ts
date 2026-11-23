@@ -1,19 +1,75 @@
+import type { GameEvent, GameState } from "../engine/types";
+
 class SoundFX {
   private ctx: AudioContext | null = null;
   private muted = false;
+  private output: GainNode | null = null;
+
+  public enableOnInteraction(): void {
+    const unlock = () => {
+      if (this.muted) return;
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!this.ctx || this.ctx.state === "closed") {
+        this.ctx = new AudioCtx();
+        this.output = this.ctx.createGain();
+        this.output.connect(this.ctx.destination);
+      }
+      if (this.ctx.state !== "running") void this.ctx.resume().catch(() => {});
+    };
+    document.addEventListener("click", unlock, { capture: true });
+    document.addEventListener("keydown", unlock, { capture: true });
+    document.addEventListener("pointerup", unlock, { capture: true });
+  }
 
   private ensureCtx(): AudioContext | null {
-    if (this.muted) return null;
-    if (!this.ctx && typeof window !== "undefined") {
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (AudioCtx) {
-        this.ctx = new AudioCtx();
-      }
+    return !this.muted && this.ctx?.state === "running" ? this.ctx : null;
+  }
+
+  public playEvent(type: GameEvent["type"], victory: boolean): void {
+    switch (type) {
+      case "play_card":
+      case "burn_card": this.playCardSlap(); break;
+      case "call": this.playCall(); break;
+      case "response":
+      case "flor_result": this.playCall(true); break;
+      case "envido_result":
+      case "hand_end": this.playStoneClink(); break;
+      case "match_end": this.playFanfare(victory); break;
     }
-    if (this.ctx && this.ctx.state === "suspended") {
-      void this.ctx.resume();
+  }
+
+  public playOnlineUpdate(previous: GameState | undefined, current: GameState, turnBegan: boolean): void {
+    const last = current.lastEvent;
+    if (previous && last && last.id > (previous.lastEvent?.id ?? 0)) {
+      // Una misma carta puede generar también el cierre de baza, mano o partida.
+      const events = current.log.filter(e => e.id > (previous.lastEvent?.id ?? 0));
+      const action = events.reverse().find(e =>
+        e.type === "play_card" || e.type === "burn_card" || e.type === "call" || e.type === "response");
+      if (action) this.playEvent(action.type, current.matchWinner === "nosotros");
+      if (last.id !== action?.id) this.playEvent(last.type, current.matchWinner === "nosotros");
     }
-    return this.ctx;
+    if (turnBegan) this.playTurnCue();
+  }
+
+  private playTurnCue(): void {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime + 0.18;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(660, now);
+    osc.frequency.setValueAtTime(880, now + 0.12);
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.18, now + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+    gain.gain.linearRampToValueAtTime(0.18, now + 0.14);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.37);
+    osc.connect(gain);
+    gain.connect(this.output!);
+    osc.start(now);
+    osc.stop(now + 0.38);
   }
 
   public isMuted(): boolean {
@@ -22,6 +78,7 @@ class SoundFX {
 
   public toggleMute(): boolean {
     this.muted = !this.muted;
+    if (this.output) this.output.gain.value = this.muted ? 0 : 1;
     return this.muted;
   }
 
@@ -49,7 +106,7 @@ class SoundFX {
 
     noise.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.output!);
     noise.start(now);
   }
 
@@ -78,7 +135,7 @@ class SoundFX {
 
       noise.connect(filter);
       filter.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.output!);
       noise.start(t);
     }
   }
@@ -98,7 +155,7 @@ class SoundFX {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
 
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.output!);
     osc.start(now);
     osc.stop(now + 0.09);
 
@@ -119,7 +176,7 @@ class SoundFX {
       gain.gain.setValueAtTime(0.14, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.output!);
       osc.start(t);
       osc.stop(t + 0.24);
     });
@@ -137,7 +194,7 @@ class SoundFX {
     gain.gain.setValueAtTime(0.12, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.output!);
     osc.start(now);
     osc.stop(now + 0.15);
   }
@@ -156,7 +213,7 @@ class SoundFX {
       gain.gain.setValueAtTime(0.16, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.output!);
       osc.start(t);
       osc.stop(t + 0.37);
     });
@@ -176,7 +233,7 @@ class SoundFX {
       gain.gain.setValueAtTime(0.08, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.output!);
       osc.start(t);
       osc.stop(t + 0.16);
     });

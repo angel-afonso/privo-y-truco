@@ -14,9 +14,6 @@ import {
   getCardTrucoPower,
   getEnvidoCards,
   getPartnerSignal,
-  getPericaSpec,
-  getPericoSpec,
-  getTrucoAcceptPoints,
 } from "../engine/evaluator";
 import { TrucoEngine } from "../engine/gameEngine";
 import {
@@ -30,32 +27,27 @@ import {
 } from "../engine/partnerComms";
 import {
   GameConfig,
+  GameState,
   getPlayerLabel,
   getPlayerTeam,
   getTeamLabel,
   PlayerAction,
   PlayerId,
-  SUIT_NAMES,
   TRUCO_LEVEL_NAMES,
-  TrucoLevel,
 } from "../engine/types";
-import { CARD_WIDTH, CardView, createCardBackGraphics } from "./cardRenderer";
+import { CARD_HEIGHT, CARD_WIDTH, CardView, createCardBackGraphics } from "./cardRenderer";
 import {
-  ButtonTheme,
   CenterBannerToast,
   PartnerCommDrawer,
   PartnerWhisperPill,
   PillButton,
-  RulesModal,
   SegmentedToggle,
   SparkleSystem,
   SpeechBubble,
   StoneScoreboard,
-  TurnSpotlightPill,
 } from "./components";
 import {
   drawIconDiamondCrown,
-  drawIconFlor,
   drawIconHelp,
   drawIconMenu,
   drawIconPartner,
@@ -65,13 +57,18 @@ import { soundFX } from "./sound";
 import { FONT_DISPLAY, FONT_UI, getFeltGrainTexture, PALETTE } from "./theme";
 import { Easing, TweenManager } from "./tween";
 import { pendingActionLabel, previewPlayerAction } from "../multiplayer/optimisticAction";
-import { isHiddenCardId } from "../multiplayer/perspective";
+import { formatOnlineSummaryText, isHiddenCardId } from "../multiplayer/perspective";
 import {
   SafeViewerSyncPayload,
   TeamWhisperPayload,
   TrucoRoomClient,
 } from "../multiplayer/roomClient";
 import { PersistedHostSnapshot } from "../multiplayer/sessionStore";
+import { StakeBoard } from "./stakeBoard";
+import { tableChoices, tableStake } from "./tableBids";
+import { createRulesDialog } from "./rulesDialog";
+import { RoomChat } from "./roomChat";
+import { RoomDirectory } from "./roomDirectory";
 import { MultiplayerLobby } from "./multiplayerLobby";
 
 const BOT_REPLY_MS = 260;
@@ -103,16 +100,21 @@ export class TrucoGameApp {
   private feltGrainSprite: TilingSprite;
   private arenaSlotsG = new Graphics();
   private trickDotsG = new Graphics();
+  private tableCall = new Text({ style: {
+    fontFamily: FONT_DISPLAY, fontSize: 37, fontStyle: "italic", fill: 0xdfd9b9,
+  } });
+  private tableCaller = new Text({ style: {
+    fontFamily: FONT_UI, fontSize: 10, fontWeight: "700", letterSpacing: 1.8, fill: 0xc6cdb5,
+  } });
 
   // Deck & Vira
   private deckGroup = new Container();
-  private viraInfoBg = new Graphics();
-  private viraInfoTxt: Text;
 
   // Unified top header bar, scoreboard & top controls
   private headerBarBg = new Graphics();
   private scoreboard = new StoneScoreboard();
-  private stakePillTxt: Text;
+  private stakeBoard = new StakeBoard();
+  private tableTitle: Text;
   private topControls = new Container();
   private muteBtn!: PillButton;
   private lastCompactTopControls: boolean | null = null;
@@ -129,7 +131,9 @@ export class TrucoGameApp {
   private partnerHint: PartnerTacticalHint = {};
 
   // Turn indicators, helper & action dock (sin barra negra redundante abajo)
-  private turnPill = new TurnSpotlightPill();
+  private turnStatus = new Text({ style: {
+    fontFamily: FONT_UI, fontSize: 12, fontWeight: "600", fill: PALETTE.inkSecondary,
+  } });
   private centerToast = new CenterBannerToast();
   private sparkles = new SparkleSystem();
   private handHelperBg = new Graphics();
@@ -163,11 +167,14 @@ export class TrucoGameApp {
   };
   private menuOverlay = new Container();
   private summaryOverlay = new Container();
-  private rulesModal!: RulesModal;
+  private rulesModal = createRulesDialog();
 
   // Multijugador Online (Supabase: Server Postgres/Edge o Realtime endurecido)
   private roomClient!: TrucoRoomClient;
+  private waitingAtTable = false;
   private mpLobby!: MultiplayerLobby;
+  private directory!: RoomDirectory;
+  private chat!: RoomChat;
   private hostEngine: TrucoEngine | null = null;
   private isOnlineMatch = false;
   private confirmedView: SafeViewerSyncPayload | null = null;
@@ -183,6 +190,7 @@ export class TrucoGameApp {
 
   constructor(app: Application) {
     this.app = app;
+    soundFX.enableOnInteraction();
     this.engine = new TrucoEngine(this.menuConfig);
 
     this.feltGrainSprite = new TilingSprite({
@@ -192,20 +200,7 @@ export class TrucoGameApp {
     });
     this.feltGrainSprite.alpha = 0.055;
 
-    this.viraInfoTxt = new Text({
-      text: "",
-      style: {
-        fontFamily: FONT_UI,
-        fontSize: 11,
-        fontWeight: "600",
-        align: "center",
-        lineHeight: 15,
-        fill: PALETTE.inkSecondary,
-      },
-    });
-    this.viraInfoTxt.anchor.set(0.5);
-
-    this.stakePillTxt = new Text({
+    this.tableTitle = new Text({
       text: "",
       style: {
         fontFamily: FONT_UI,
@@ -215,7 +210,7 @@ export class TrucoGameApp {
         fill: PALETTE.brassLight,
       },
     });
-    this.stakePillTxt.anchor.set(0.5);
+    this.tableTitle.anchor.set(0.5);
 
     this.handHelperTxt = new Text({
       text: "",
@@ -242,9 +237,6 @@ export class TrucoGameApp {
     });
 
     this.setupScene();
-    this.buildTopControls(this.isCompactLayout());
-    this.buildPartnerCommBtn(this.isCompactLayout());
-    this.buildMenuOverlay();
     this.partnerCommDrawer = new PartnerCommDrawer({
       onQuery: (q) => this.handlePartnerQuery(q),
       onCommand: (cmd) => this.handlePartnerCommandAction(cmd),
@@ -252,14 +244,10 @@ export class TrucoGameApp {
         this.partnerCommDrawer.visible = false;
       },
     });
-    this.rulesModal = new RulesModal(() => {
-      this.rulesModal.visible = false;
-    });
     this.overlayLayer.addChild(
       this.menuOverlay,
       this.summaryOverlay,
       this.partnerCommDrawer,
-      this.rulesModal,
     );
 
     this.app.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -270,23 +258,23 @@ export class TrucoGameApp {
         b.tick(ticker.deltaMS);
       }
       this.partnerWhisper.tick(ticker.deltaMS);
-      this.turnPill.tick(ticker.deltaMS);
       this.centerToast.tick(ticker.deltaMS);
       this.sparkles.tick(ticker.deltaMS);
     });
 
     this.app.renderer.on("resize", () => this.layout());
     this.setupMultiplayer();
-    this.layout();
     this.showMenu();
 
     // 1) Si el enlace incluye ?sala=CODIGO, abrir el lobby con el código listo
     // 2) Si existe una sesión activa reciente en esta pestaña, reconectar automáticamente
     const savedSession = this.roomClient.getSavedSession();
     if (this.mpLobby.hasPendingUrlCode() && !savedSession) {
-      this.mpLobby.open(this.menuConfig);
+      this.directory.suspend();
+      this.mpLobby.open(this.menuConfig, { type: "code" });
     } else if (savedSession) {
       if (!savedSession.inMatch) {
+        this.directory.suspend();
         this.mpLobby.open(savedSession.config);
       }
       void this.roomClient.tryAutoReconnect();
@@ -317,7 +305,30 @@ export class TrucoGameApp {
   private isCompactLayout(): boolean {
     const w = this.app.screen.width;
     const h = this.app.screen.height;
-    return w < 780 || h > w * 1.05;
+    return w < 780 || h > w * 1.05 || this.isShortLandscape();
+  }
+
+  private isShortLandscape(): boolean {
+    const { width, height } = this.app.screen;
+    return height <= 500 && width >= 520 && width > height * 1.25;
+  }
+
+  private headerHeight(): number {
+    return this.isShortLandscape() ? 52 : this.isCompactLayout() ? 138 : 60;
+  }
+
+  private mobileSeats() {
+    const { width: w, height: h } = this.app.screen;
+    const landscape = this.isShortLandscape();
+    const tableWidth = landscape ? Math.round(w * 0.56) : w;
+    const handY = landscape ? (h + 62) / 2 : h - 192;
+    // La carta revelada e inclinada necesita más espacio sobre su centro que un dorso.
+    const northY = this.headerHeight() + 16 + Math.ceil((CARD_HEIGHT / 2 + 8) * 0.48);
+    return {
+      tableWidth, northX: tableWidth / 2, northY,
+      handX: landscape ? (w + tableWidth) / 2 : w / 2, handY,
+      centerY: landscape ? (northY + h - 80) / 2 : (northY + handY - 24) / 2,
+    };
   }
 
   private is2v2(): boolean {
@@ -337,32 +348,35 @@ export class TrucoGameApp {
     );
 
     this.tableLayer.addChild(this.tableBg, this.feltGrainSprite);
-    this.arenaLayer.addChild(this.arenaSlotsG);
+    this.tableCall.anchor.set(0.5);
+    this.tableCaller.anchor.set(0.5);
+    this.arenaLayer.addChild(this.arenaSlotsG, this.tableCall, this.tableCaller);
     this.arenaLayer.eventMode = "none";
     this.arenaLayer.interactiveChildren = false;
     this.cardsLayer.sortableChildren = true;
 
-    this.deckLayer.addChild(this.deckGroup, this.viraInfoBg, this.viraInfoTxt);
+    this.deckLayer.addChild(this.deckGroup);
     this.deckLayer.eventMode = "none";
     this.deckLayer.interactiveChildren = false;
 
     this.hudLayer.addChild(
       this.headerBarBg,
       this.scoreboard,
-      this.stakePillTxt,
+      this.tableTitle,
+      this.stakeBoard,
       this.trickDotsG,
       this.topControls,
       this.seatBadges.partner.container,
       this.seatBadges.cpu.container,
       this.seatBadges.cpu2.container,
-      this.turnPill,
+      this.turnStatus,
       this.handHelperBg,
       this.handHelperTxt,
       this.actionBar,
     );
 
-    this.turnPill.eventMode = "none";
-    this.turnPill.interactiveChildren = false;
+    this.turnStatus.anchor.set(0.5);
+    this.turnStatus.eventMode = "none";
     this.fxLayer.eventMode = "none";
     this.fxLayer.interactiveChildren = false;
     this.bubbleLayer.eventMode = "none";
@@ -386,15 +400,17 @@ export class TrucoGameApp {
       this.partnerCommBtn.destroy({ children: true });
     }
     this.partnerCommBtn = new PillButton({
-      label: compact ? "Comp." : "Compañero",
-      width: compact ? 92 : 136,
-      height: compact ? 40 : 38,
+      label: compact ? "" : "Compañero",
+      width: compact ? 44 : 136,
+      height: compact ? 44 : 38,
       fontSize: compact ? 12 : 12.5,
       radius: 10,
       theme: "secondary",
       drawIcon: (g, col) => drawIconPartner(g, 14, col),
       onClick: () => this.togglePartnerCommDrawer(),
     });
+    this.partnerCommBtn.accessible = true;
+    this.partnerCommBtn.accessibleTitle = "Hablar con el compañero";
     this.partnerCommBtn.visible = this.canUsePartnerComms();
     this.hudLayer.addChild(this.partnerCommBtn);
   }
@@ -578,18 +594,18 @@ export class TrucoGameApp {
     const { cy, cardScale } = this.getArenaMetrics();
 
     if (compact) {
-      const matRy = 124 * cardScale;
-      const whisperY = Math.max(166, Math.min(184, cy - matRy - 40));
-      this.partnerWhisper.setMaxWidth(w - 22);
-      this.partnerWhisper.position.set(w / 2, whisperY);
+      const seats = this.mobileSeats();
+      const whisperY = this.isShortLandscape() ? cy + 54 : seats.northY + 57;
+      this.partnerWhisper.setMaxWidth(seats.tableWidth - 28);
+      this.partnerWhisper.position.set(seats.northX, whisperY);
       if (this.partnerCommBtn) {
-        this.partnerCommBtn.position.set(w - 56, h - 294);
+        this.partnerCommBtn.position.set(32, this.mobileSeats().northY);
       }
     } else {
       this.partnerWhisper.setMaxWidth(Math.min(500, w - 180));
       this.partnerWhisper.position.set(w / 2, 218 * Math.max(0.86, cardScale));
       if (this.partnerCommBtn) {
-        this.partnerCommBtn.position.set(Math.max(w - 102, w * 0.89), h - 46);
+        this.partnerCommBtn.position.set(w - 96, h - 110);
       }
     }
   }
@@ -602,7 +618,7 @@ export class TrucoGameApp {
     const muted = soundFX.isMuted();
 
     if (compact) {
-      const btnSize = 36;
+      const btnSize = 44;
       const rulesBtn = new PillButton({
         width: btnSize,
         height: btnSize,
@@ -610,7 +626,7 @@ export class TrucoGameApp {
         theme: "ghost",
         drawIcon: (g, col) => drawIconHelp(g, 17, col),
         onClick: () => {
-          this.rulesModal.visible = !this.rulesModal.visible;
+          this.rulesModal.showModal();
         },
       });
 
@@ -635,8 +651,8 @@ export class TrucoGameApp {
         onClick: () => this.showMenu(),
       });
 
-      rulesBtn.position.set(-84, 0);
-      this.muteBtn.position.set(-42, 0);
+      rulesBtn.position.set(-100, 0);
+      this.muteBtn.position.set(-50, 0);
       menuBtn.position.set(0, 0);
       this.topControls.addChild(rulesBtn, this.muteBtn, menuBtn);
       return;
@@ -651,7 +667,7 @@ export class TrucoGameApp {
       theme: "ghost",
       drawIcon: (g, col) => drawIconHelp(g, 14, col),
       onClick: () => {
-        this.rulesModal.visible = !this.rulesModal.visible;
+        this.rulesModal.showModal();
       },
     });
 
@@ -685,153 +701,88 @@ export class TrucoGameApp {
   }
 
   private buildMenuOverlay(): void {
-    this.menuOverlay.removeChildren();
-
-    const w = this.app.screen.width;
-    const h = this.app.screen.height;
-    const isNarrow = w < 540;
-
-    const shade = new Graphics().rect(0, 0, w, h).fill({ color: 0x050e0a, alpha: 0.78 });
+    for (const child of this.menuOverlay.removeChildren()) child.destroy({ children: true });
+    const { width: w, height: h } = this.app.screen;
+    const short = this.isShortLandscape();
+    const isNarrow = !short && w < 700;
+    const cardW = isNarrow ? Math.min(410, w - 26) : short ? Math.min(820, w - 24) : 920;
+    const coverHeight = Math.max(100, Math.min(170, h - 444));
+    const cardH = isNarrow ? coverHeight + 416 : short ? Math.min(350, h - 20) : 482;
+    const shade = new Graphics().rect(0, 0, w, h).fill(0x102c23);
+    shade.rect(10, 10, w - 20, h - 20).stroke({ width: 1, color: 0x617465, alpha: 0.4 });
     shade.eventMode = "static";
-    this.menuOverlay.addChild(shade);
-
-    const cardW = isNarrow ? Math.min(358, w - 22) : 488;
-    const cardH = isNarrow ? 500 : 446;
+    const grain = new TilingSprite({ texture: getFeltGrainTexture(), width: w, height: h });
+    grain.alpha = 0.038;
     const panel = new Container();
     panel.position.set(w / 2, h / 2);
-    const scale = Math.min(1, (w - 20) / cardW, (h - 24) / cardH);
-    panel.scale.set(scale);
-    this.menuOverlay.addChild(panel);
+    panel.scale.set(Math.min(1, (w - 20) / cardW, (h - 24) / cardH));
+    this.menuOverlay.addChild(shade, grain, panel);
 
-    // Marco editorial caoba/bosque con filete de latón
+    const left = -cardW / 2;
+    const top = -cardH / 2;
+    const coverW = isNarrow ? cardW : short ? Math.round(cardW * 0.31) : 440;
+    const coverH = isNarrow ? coverHeight : cardH;
+    const formLeft = isNarrow ? left : left + coverW;
+    const formTop = isNarrow ? top + coverH : top;
+    const formW = isNarrow ? cardW : cardW - coverW;
+    const inset = short ? 14 : isNarrow ? 19 : 35;
+    const innerW = formW - inset * 2;
+    const x = formLeft + inset;
     const bg = new Graphics()
-      .roundRect(-cardW / 2 + 2, -cardH / 2 + 6, cardW, cardH, 18)
-      .fill({ color: 0x000000, alpha: 0.45 })
-      .roundRect(-cardW / 2, -cardH / 2, cardW, cardH, 18)
-      .fill(PALETTE.surfaceCard)
-      .stroke({ width: 1.6, color: PALETTE.brass, alpha: 0.78 });
-    // Filete interior fino
-    bg.roundRect(-cardW / 2 + 7, -cardH / 2 + 7, cardW - 14, cardH - 14, 13).stroke({
-      width: 0.8,
-      color: PALETTE.brass,
-      alpha: 0.22,
-    });
+      .rect(left + 3, top + 6, cardW, cardH).fill({ color: 0x06110d, alpha: 0.55 })
+      .rect(left, top, cardW, cardH).fill(PALETTE.ivoryWarm)
+      .rect(left, top, coverW, coverH).fill(0x623229)
+      .rect(left + 7, top + 7, coverW - 14, coverH - 14).stroke({ width: 1, color: 0xc2a884, alpha: 0.64 })
+      .rect(left + 11, top + 11, coverW - 22, coverH - 22).stroke({ width: 0.7, color: 0xc2a884, alpha: 0.45 });
     panel.addChild(bg);
-
-    // Abanico de cartas españolas protagonistas
-    const demoVira = { id: "5_oros", suit: "oros" as const, rank: 5 as const };
-    const demoCards = [
-      { id: "11_oros", suit: "oros" as const, rank: 11 as const },
-      { id: "1_espadas", suit: "espadas" as const, rank: 1 as const },
-      { id: "1_bastos", suit: "bastos" as const, rank: 1 as const },
-    ];
-    demoCards.forEach((c, idx) => {
-      const cv = new CardView(c, demoVira, true);
-      cv.scale.set(isNarrow ? 0.46 : 0.54);
-      cv.position.set((idx - 1) * (isNarrow ? 36 : 44), -cardH / 2 + (isNarrow ? 46 : 52));
-      cv.rotation = (idx - 1) * 0.15;
-      panel.addChild(cv);
+    const heading = new Text({ text: "Truco\nvenezolano", style: {
+      fontFamily: FONT_DISPLAY, fontSize: isNarrow ? 37 : 56, lineHeight: isNarrow ? 37 : 54,
+      fontWeight: "700", fill: PALETTE.ivoryWarm,
+    } });
+    const titleWidth = isNarrow ? cardW * 0.55 - 10 : coverW - 44;
+    heading.scale.set(Math.min(1, titleWidth / heading.width));
+    heading.position.set(left + (short ? 20 : isNarrow ? 23 : 38), top + (isNarrow ? 16 : 35));
+    const deckLabel = new Text({ text: "BARAJA ESPAÑOLA  /  40 CARTAS", style: {
+      fontFamily: FONT_UI, fontSize: isNarrow ? 9 : 11, fontWeight: "700", letterSpacing: 1.5, fill: 0xeee0c8,
+    } });
+    if (short) deckLabel.scale.set(Math.min(1, (coverW - 40) / deckLabel.width));
+    deckLabel.position.set(heading.x, top + coverH - (isNarrow ? 20 : 42));
+    panel.addChild(heading, deckLabel);
+    const sample = [{ rank: 11, suit: "oros" }, { rank: 1, suit: "bastos" }, { rank: 1, suit: "espadas" }] as const;
+    sample.forEach(({ rank, suit }, i) => {
+      const card = new CardView({ id: `${rank}_${suit}`, rank, suit }, undefined, true);
+      const scale = isNarrow ? Math.min(0.65, cardW / 620) : short ? Math.min(0.72, (coverW - 36) / 220) : 1.02;
+      card.scale.set(scale);
+      card.rotation = (i - 1) * 0.18;
+      const center = isNarrow ? left + cardW * 0.77 : left + coverW / 2;
+      card.position.set(center + (i - 1) * 47 * scale,
+        top + (isNarrow ? coverH / 2 : short ? coverH * 0.60 : 296) + Math.abs(i - 1) * 9 * scale);
+      panel.addChild(card);
     });
-
-    const title = new Text({
-      text: "TRUCO VENEZOLANO",
-      style: {
-        fontFamily: FONT_DISPLAY,
-        fontSize: isNarrow ? 23 : 29,
-        fontWeight: "700",
-        letterSpacing: 1.0,
-        fill: PALETTE.ivory,
-        padding: 4,
-      },
-    });
-    title.anchor.set(0.5);
-    title.position.set(0, -cardH / 2 + (isNarrow ? 108 : 120));
-    panel.addChild(title);
-
-    const subtitle = new Text({
-      text: "Baraja Española · 40 cartas · Vira, Envido y Flor",
-      style: {
-        fontFamily: FONT_UI,
-        fontSize: isNarrow ? 11.5 : 12.5,
-        fontWeight: "500",
-        fill: PALETTE.inkSecondary,
-        align: "center",
-        wordWrap: true,
-        wordWrapWidth: cardW - 40,
-      },
-    });
-    subtitle.anchor.set(0.5);
-    subtitle.position.set(0, -cardH / 2 + (isNarrow ? 136 : 148));
-    panel.addChild(subtitle);
-
+    const settings = new Text({ text: "Preparar la mesa", style: {
+      fontFamily: FONT_DISPLAY, fontSize: short ? 24 : isNarrow ? 27 : 36, fontWeight: "700", fill: 0x24382b,
+    } });
+    settings.position.set(x, formTop + (short ? 12 : isNarrow ? 18 : 30));
+    panel.addChild(settings);
     const addOptionRow = (
-      y: number,
-      label: string,
-      leftLabel: string,
-      rightLabel: string,
-      leftActive: boolean,
-      onLeft: () => void,
-      onRight: () => void,
+      y: number, label: string, leftLabel: string, rightLabel: string,
+      leftActive: boolean, onLeft: () => void, onRight: () => void,
     ) => {
-      if (isNarrow) {
-        const lbl = new Text({
-          text: label.toUpperCase(),
-          style: {
-            fontFamily: FONT_UI,
-            fontSize: 10,
-            fontWeight: "800",
-            letterSpacing: 0.9,
-            fill: PALETTE.inkMuted,
-          },
-        });
-        lbl.anchor.set(0.5);
-        lbl.position.set(0, y - 24);
-        panel.addChild(lbl);
-
-        const seg = new SegmentedToggle({
-          width: cardW - 44,
-          height: 40,
-          leftLabel,
-          rightLabel,
-          leftActive,
-          onLeft,
-          onRight,
-        });
-        seg.position.set(0, y + 6);
-        panel.addChild(seg);
-      } else {
-        const lbl = new Text({
-          text: label,
-          style: {
-            fontFamily: FONT_UI,
-            fontSize: 13,
-            fontWeight: "600",
-            fill: PALETTE.inkSecondary,
-          },
-        });
-        lbl.anchor.set(0, 0.5);
-        lbl.position.set(-cardW / 2 + 28, y);
-        panel.addChild(lbl);
-
-        const seg = new SegmentedToggle({
-          width: 256,
-          height: 38,
-          leftLabel,
-          rightLabel,
-          leftActive,
-          onLeft,
-          onRight,
-        });
-        seg.position.set(cardW / 2 - 156, y);
-        panel.addChild(seg);
-      }
+      const lbl = new Text({ text: label.toUpperCase(), style: {
+        fontFamily: FONT_UI, fontSize: 11, fontWeight: "800", letterSpacing: 1.4, fill: 0x515849,
+      } });
+      lbl.position.set(x, short ? y - 5 : y - 39);
+      const segW = short ? innerW - 86 : innerW;
+      const seg = new SegmentedToggle({ width: segW, height: 44, leftLabel, rightLabel, leftActive, onLeft, onRight });
+      seg.position.set(x + innerW - segW / 2, y + 4);
+      panel.addChild(lbl, seg);
     };
 
     addOptionRow(
-      isNarrow ? -44 : -22,
+      formTop + (short ? 78 : isNarrow ? 102 : 132),
       "Mesa",
-      "1 vs 1",
-      "2 vs 2 (Parejas)",
+      "Individual",
+      "Por parejas",
       this.menuConfig.mode === "1v1",
       () => {
         this.menuConfig.mode = "1v1";
@@ -844,7 +795,7 @@ export class TrucoGameApp {
     );
 
     addOptionRow(
-      isNarrow ? 30 : 32,
+      formTop + (short ? 132 : isNarrow ? 181 : 219),
       "Piedras",
       "12 piedras",
       "24 piedras",
@@ -860,7 +811,7 @@ export class TrucoGameApp {
     );
 
     addOptionRow(
-      isNarrow ? 104 : 86,
+      formTop + (short ? 186 : isNarrow ? 260 : 306),
       "Modalidad",
       "Con Flor",
       "Sin Flor",
@@ -876,50 +827,50 @@ export class TrucoGameApp {
     );
 
     const btnGap = 8;
-    const innerW = cardW - (isNarrow ? 44 : 56);
-    const playW = isNarrow ? Math.round(innerW * 0.48) : 178;
-    const onlineW = isNarrow ? Math.round(innerW * 0.28) : 114;
-    const rulesW = innerW - playW - onlineW - btnGap * 2;
-    const startX = -innerW / 2;
+    const playW = isNarrow ? innerW : short ? (innerW - 16) * 0.4 : 178;
+    const onlineW = isNarrow ? (innerW - btnGap) / 2 : short ? (innerW - 16) * 0.3 : 114;
+    const rulesW = isNarrow ? onlineW : innerW - playW - onlineW - btnGap * 2;
+    const startX = x;
 
     const playBtn = new PillButton({
-      label: isNarrow ? "Jugar" : "Jugar solo",
+      label: "Jugar solo",
       width: playW,
       height: 46,
       fontSize: 14.5,
-      radius: 11,
-      theme: "primary",
+      radius: 4,
+      theme: "danger",
       onClick: () => this.startMatch(),
     });
-    playBtn.position.set(startX + playW / 2, cardH / 2 - 46);
+    playBtn.position.set(startX + playW / 2, cardH / 2 - (isNarrow ? 92 : 48));
 
     const onlineBtn = new PillButton({
-      label: "Online",
+      label: "Volver",
       width: onlineW,
       height: 46,
       fontSize: 13.5,
-      radius: 11,
+      radius: 4,
       theme: "secondary",
       onClick: () => {
-        this.mpLobby.open(this.menuConfig);
+        this.menuOverlay.visible = false;
+        this.directory.show();
       },
     });
-    onlineBtn.position.set(startX + playW + btnGap + onlineW / 2, cardH / 2 - 46);
+    onlineBtn.position.set(startX + (isNarrow ? 0 : playW + btnGap) + onlineW / 2, cardH / 2 - (isNarrow ? 38 : 48));
 
     const rulesBtn = new PillButton({
       label: "Reglas",
       width: rulesW,
       height: 46,
       fontSize: 13,
-      radius: 11,
+      radius: 4,
       theme: "ghost",
       onClick: () => {
-        this.rulesModal.visible = true;
+        this.rulesModal.showModal();
       },
     });
     rulesBtn.position.set(
-      startX + playW + btnGap + onlineW + btnGap + rulesW / 2,
-      cardH / 2 - 46,
+      startX + innerW - rulesW / 2,
+      cardH / 2 - (isNarrow ? 38 : 48),
     );
     panel.addChild(playBtn, onlineBtn, rulesBtn);
   }
@@ -954,6 +905,7 @@ export class TrucoGameApp {
       },
       onRemoteAction: (seat, action) => this.handleRemotePlayerAction(seat, action),
       onActionRejected: (id) => this.recoverPendingAction(id),
+      onChatChange: (room, messages, initial) => this.chat.receive(room, messages, initial),
       onTeamWhisper: (payload) => {
         this.handleIncomingTeamWhisper(payload);
       },
@@ -967,11 +919,22 @@ export class TrucoGameApp {
       },
     });
 
+    this.chat = new RoomChat(this.roomClient.clientId,
+      (id, text) => this.roomClient.sendChat(id, text), () => this.roomClient.refreshChat());
     this.mpLobby = new MultiplayerLobby({
-      onCreateRoom: async (name, cfg) => {
+      onChatSlot: slot => this.chat.place(slot),
+      onTableViewChange: waiting => {
+        this.waitingAtTable = waiting;
+        if (waiting) this.directory.hide();
+        else this.chat.place();
+        for (const layer of [this.deckLayer, this.arenaLayer, this.cardsLayer, this.hudLayer,
+          this.fxLayer, this.bubbleLayer, this.overlayLayer]) layer.visible = !waiting;
+        this.drawTableAndArena();
+      },
+      onCreateRoom: async (name, cfg, visibility) => {
         try {
           this.menuConfig = { ...cfg };
-          await this.roomClient.createRoom(name, cfg);
+          await this.roomClient.createRoom(name, cfg, visibility);
           this.syncLobbySnapshot();
         } catch (err) {
           this.mpLobby.setStatus(
@@ -981,9 +944,9 @@ export class TrucoGameApp {
           );
         }
       },
-      onJoinRoom: async (code, name) => {
+      onJoinRoom: async (code, name, publicEntry) => {
         try {
-          await this.roomClient.joinRoom(code, name);
+          await this.roomClient.joinRoom(code, name, publicEntry);
           this.syncLobbySnapshot();
         } catch (err) {
           this.mpLobby.setStatus(
@@ -1007,14 +970,47 @@ export class TrucoGameApp {
         this.resetOnlineState();
         await this.roomClient.leaveRoom(true);
         this.syncLobbySnapshot();
+        this.mpLobby.close();
+        this.directory.show();
       },
       onClose: () => {
-        // Mantener en menú principal
+        this.directory.show();
+      },
+    });
+    const hand = new Container();
+    const sample = [{ rank: 11, suit: "oros" }, { rank: 1, suit: "bastos" }, { rank: 1, suit: "espadas" }] as const;
+    sample.forEach(({ rank, suit }, i) => {
+      const card = new CardView({ id: `${rank}_${suit}`, rank, suit }, undefined, true);
+      card.position.set((i - 1) * 40, Math.abs(i - 1) * 8);
+      card.rotation = (i - 1) * .20;
+      hand.addChild(card);
+    });
+    const cards = this.app.renderer.extract.canvas({ target: hand, resolution: 2 }) as HTMLCanvasElement;
+    hand.destroy({ children: true });
+    this.directory = new RoomDirectory(cards, {
+      list: () => this.roomClient.listPublicRooms(),
+      join: room => {
+        this.directory.suspend();
+        this.mpLobby.open(this.menuConfig, { type: "public", room });
+      },
+      create: () => {
+        this.directory.suspend();
+        this.mpLobby.open(this.menuConfig, { type: "create" });
+      },
+      code: () => {
+        this.directory.suspend();
+        this.mpLobby.open(this.menuConfig, { type: "code" });
+      },
+      solo: () => {
+        this.buildMenuOverlay();
+        this.menuOverlay.visible = true;
+        this.directory.hide();
       },
     });
   }
 
   private resetOnlineState(): void {
+    this.chat.setRoom(null);
     this.clearPendingAction();
     this.confirmedView = null;
     this.isOnlineMatch = false;
@@ -1029,8 +1025,11 @@ export class TrucoGameApp {
   }
 
   private syncLobbySnapshot(): void {
+    this.chat.setRoom(this.roomClient.roomCode);
     this.mpLobby.setRoomState({
       roomCode: this.roomClient.roomCode,
+      visibility: this.roomClient.visibility,
+      inviteCode: this.roomClient.inviteCode,
       isHost: this.roomClient.isHost,
       myClientId: this.roomClient.clientId,
       mySeat: this.roomClient.mySeat,
@@ -1054,8 +1053,9 @@ export class TrucoGameApp {
     if (!this.roomClient.isHost || !this.roomClient.isConnected()) return;
 
     if (this.roomClient.backendMode === "server") {
-      this.mpLobby.close();
-      await this.roomClient.startServerMatch();
+      if (!await this.roomClient.startServerMatch()) {
+        this.mpLobby.setStatus("No se pudo iniciar la partida. Intenta de nuevo.", true);
+      }
       return;
     }
 
@@ -1089,9 +1089,8 @@ export class TrucoGameApp {
   private applySafeViewSync(payload: SafeViewerSyncPayload): void {
     const previous = this.confirmedView;
     if (previous && payload.version < previous.version) return;
-    const sameVersion = previous?.version === payload.version;
     this.confirmedView = payload;
-    if (sameVersion) {
+    if (previous?.version === payload.version) {
       if (JSON.stringify(payload.offlineSeats) !== JSON.stringify(previous.offlineSeats) ||
           JSON.stringify(payload.seatNames) !== JSON.stringify(previous.seatNames) ||
           JSON.stringify(payload.humanSeats) !== JSON.stringify(previous.humanSeats)) {
@@ -1102,17 +1101,24 @@ export class TrucoGameApp {
         if (!this.isDealing) this.updateTurnIndicator();
         this.scheduleBotIfNeeded();
       } else if (this.botTimer === null && this.roomClient.backendMode === "server") {
-        // A heartbeat can recover a bot step whose request failed.
+        // Si falló la petición anterior del bot, el siguiente sondeo reanuda su turno.
         this.scheduleBotIfNeeded();
       }
       return;
     }
+    const before = previous?.viewState;
+    const next = payload.viewState;
+    const turnBegan = this.activeActorIn(next) === "player" &&
+      (!before || this.activeActorIn(before) !== "player" || before.phase !== next.phase ||
+        before.handNumber !== next.handNumber || before.trickIndex !== next.trickIndex);
+    soundFX.playOnlineUpdate(before, next, turnBegan);
     this.clearPendingAction();
     const isFreshMatch = !this.isOnlineMatch || this.inMenu;
 
     this.isOnlineMatch = true;
     this.inMenu = false;
     this.burnMode = false;
+    this.directory.hide();
     this.menuOverlay.visible = false;
     this.summaryOverlay.visible = false;
     this.mpLobby.close();
@@ -1173,9 +1179,18 @@ export class TrucoGameApp {
     soundFX.playPartnerWhisper();
   }
 
+  private seatLabel(seat: PlayerId): string {
+    const mode = this.engine.getState().config.mode;
+    if (this.isOnlineMatch) {
+      if (this.onlineSeatNames[seat]) return this.onlineSeatNames[seat];
+      if (mode === "1v1" && seat === "cpu" && this.onlineHumanSeats.has(seat)) return "Rival";
+    }
+    return getPlayerLabel(seat, mode);
+  }
+
   private getDisplaySeatName(seat: PlayerId, compact = false): string {
     if (this.isOnlineMatch && this.onlineSeatNames[seat]) {
-      const raw = this.onlineSeatNames[seat]!;
+      const raw = this.seatLabel(seat);
       const offlineTag = this.onlineOfflineSeats.has(seat)
         ? compact
           ? "·B"
@@ -1187,10 +1202,10 @@ export class TrucoGameApp {
     if (compact) {
       if (seat === "player") return "TÚ";
       if (seat === "partner") return "COMP.";
-      if (mode === "1v1") return "CPU";
+      if (mode === "1v1") return this.seatLabel(seat).toUpperCase();
       return seat === "cpu" ? "DER" : "IZQ";
     }
-    return getPlayerLabel(seat, mode).toUpperCase();
+    return this.seatLabel(seat).toUpperCase();
   }
 
   private showMenu(): void {
@@ -1201,7 +1216,10 @@ export class TrucoGameApp {
       void this.roomClient.leaveRoom(true);
     }
     this.inMenu = true;
-    this.menuOverlay.visible = true;
+    this.stakeBoard.visible = false;
+    this.clearActionBar();
+    this.directory.show();
+    this.menuOverlay.visible = false;
     this.summaryOverlay.visible = false;
     this.partnerCommDrawer.visible = false;
     this.partnerWhisper.hide();
@@ -1209,11 +1227,11 @@ export class TrucoGameApp {
     this.lastAutoCalloutKey = null;
     this.partnerHint = {};
     this.updatePartnerCommVisibility();
-    this.turnPill.setState(false, "");
+    this.setTurnStatus("");
     this.seatBadges.partner.container.visible = false;
     this.seatBadges.cpu.container.visible = false;
     this.seatBadges.cpu2.container.visible = false;
-    this.buildMenuOverlay();
+    this.layout();
   }
 
   private startMatch(): void {
@@ -1225,6 +1243,7 @@ export class TrucoGameApp {
     }
     this.inMenu = false;
     this.burnMode = false;
+    this.directory.hide();
     this.menuOverlay.visible = false;
     this.summaryOverlay.visible = false;
     this.partnerCommDrawer.visible = false;
@@ -1267,10 +1286,6 @@ export class TrucoGameApp {
     }
     this.isDealing = false;
     this.deckGroup.visible = true;
-    this.viraInfoBg.visible = true;
-    this.viraInfoTxt.visible = true;
-    this.viraInfoBg.alpha = 1;
-    this.viraInfoTxt.alpha = 1;
 
     if (snapToReady && !this.inMenu) {
       for (const cv of this.cardViews.values()) {
@@ -1305,15 +1320,18 @@ export class TrucoGameApp {
     const base = this.confirmedView;
     if (!base || this.pendingAction) return;
     const id = `${this.roomClient.clientId}-${Date.now()}-${++this.actionSequence}`;
-    const label = pendingActionLabel(action, this.engine.getLegalActions("player").nextTrucoLevel);
+    const label = pendingActionLabel(action, this.engine.getLegalActions("player").nextTrucoLevel, this.engine.getState().envido.chain.length > 0);
     this.pendingAction = { id, label, timer: setTimeout(() => this.recoverPendingAction(id), 5000) };
     this.engine.loadExternalState(previewPlayerAction(base.viewState, action));
     const sent = this.roomClient.sendPlayerAction(action, id, base.version);
+    if (action.type === "PLAY_CARD") this.tableCall.visible = this.tableCaller.visible = false;
     this.positionAllCards(false);
     this.updateTurnIndicator();
     this.rebuildActionBar();
     if (action.type === "NEXT_HAND") this.updateSummaryOverlay();
-    void sent.then((ok) => { if (!ok) this.recoverPendingAction(id); });
+    void sent.then((ok) => {
+      if (!ok) this.recoverPendingAction(id);
+    });
   }
 
   private dispatchPlayer(action: PlayerAction): void {
@@ -1334,8 +1352,7 @@ export class TrucoGameApp {
     this.syncFromState(false);
   }
 
-  private getActiveActorForEngine(eng: TrucoEngine): PlayerId | null {
-    const s = eng.getState();
+  private activeActorIn(s: GameState): PlayerId | null {
     if (s.phase === "PLAYING") return s.turn;
     if (s.phase === "AWAITING_ENVIDO") return s.envido.responder ?? null;
     if (s.phase === "AWAITING_FLOR") return s.flor.responder ?? null;
@@ -1344,7 +1361,7 @@ export class TrucoGameApp {
   }
 
   private getActiveActor(): PlayerId | null {
-    return this.getActiveActorForEngine(this.engine);
+    return this.activeActorIn(this.engine.getState());
   }
 
   private scheduleBotIfNeeded(): void {
@@ -1382,7 +1399,7 @@ export class TrucoGameApp {
       if (hs.phase === "HAND_OVER" || hs.phase === "MATCH_OVER" || hs.phase === "MENU") {
         return;
       }
-      const canonicalActive = this.getActiveActorForEngine(this.hostEngine);
+      const canonicalActive = this.activeActorIn(this.hostEngine.getState());
       if (!canonicalActive) return;
 
       const isHumanSeat = this.onlineCanonicalHumanSeats.has(canonicalActive);
@@ -1400,7 +1417,7 @@ export class TrucoGameApp {
       this.botTimer = setTimeout(() => {
         this.botTimer = null;
         if (!this.isOnlineMatch || !this.hostEngine) return;
-        const freshActive = this.getActiveActorForEngine(this.hostEngine);
+        const freshActive = this.activeActorIn(this.hostEngine.getState());
         if (!freshActive) return;
         const freshIsHuman = this.onlineCanonicalHumanSeats.has(freshActive);
         const freshIsOffline =
@@ -1452,6 +1469,7 @@ export class TrucoGameApp {
     if (s.lastEvent && s.lastEvent.id !== this.lastEventId) {
       this.lastEventId = s.lastEvent.id;
       const ev = s.lastEvent;
+      if (!this.isOnlineMatch) soundFX.playEvent(ev.type, s.matchWinner === "nosotros");
 
       const awaitingResponse =
         s.phase === "AWAITING_TRUCO" ||
@@ -1496,49 +1514,41 @@ export class TrucoGameApp {
         for (const b of Object.values(this.bubbles)) {
           if (b.isSticky()) b.hide();
         }
-        soundFX.playCardSlap();
-      } else if (ev.type === "call") {
-        soundFX.playCall(false);
       } else if (ev.type === "flor_result") {
-        soundFX.playCall(true);
         this.sparkles.burst(cx, cy, PALETTE.brassLight, 14);
       } else if (ev.type === "envido_result") {
-        soundFX.playStoneClink();
         this.sparkles.burst(cx, cy, PALETTE.acceptBorder, 10);
       } else if (ev.type === "trick_win") {
         const prevTrick = s.tricks[s.trickIndex - 1];
-        if (prevTrick?.winnerTeam === "nosotros") {
-          this.sparkles.burst(cx, cy, PALETTE.brassLight, 8);
-          if (!this.isCompactLayout()) {
-            this.centerToast.show(
-              this.is2v2() ? "Baza de Nosotros" : "Baza tuya",
-              `Sale ${getPlayerLabel(s.turn, s.config.mode)}`,
-              PALETTE.acceptBorder,
-              1050,
-            );
-          }
-        } else if (prevTrick?.winnerTeam === "ellos" && !this.isCompactLayout()) {
+        const namedWinner = this.isOnlineMatch && prevTrick?.winnerPlayer
+          ? this.onlineSeatNames[prevTrick.winnerPlayer]
+          : undefined;
+        const ourTrick = prevTrick?.winnerTeam === "nosotros";
+        if (ourTrick) this.sparkles.burst(cx, cy, PALETTE.brassLight, 8);
+        if ((ourTrick || prevTrick?.winnerTeam === "ellos") && !this.isCompactLayout()) {
+          let title = ourTrick ? "Baza tuya" : "Baza de la CPU";
+          if (this.is2v2()) title = ourTrick ? "Baza de Nosotros" : "Baza de Ellos";
+          if (namedWinner) title = `Baza de ${namedWinner}`;
+          else if (this.isOnlineMatch && !this.is2v2() && !ourTrick) title = `Baza de ${this.seatLabel("cpu")}`;
           this.centerToast.show(
-            this.is2v2() ? "Baza de Ellos" : "Baza de la CPU",
-            `Sale ${getPlayerLabel(s.turn, s.config.mode)}`,
-            PALETTE.crimsonBorder,
+            title,
+            `Sale ${this.seatLabel(s.turn)}`,
+            ourTrick ? PALETTE.acceptBorder : PALETTE.crimsonBorder,
             1050,
           );
         } else if (prevTrick?.winnerTeam === "parda" && !this.isCompactLayout()) {
           this.centerToast.show(
             "Baza Parda",
-            `Empate · vuelve a salir ${getPlayerLabel(s.turn, s.config.mode)}`,
+            `Empate · vuelve a salir ${this.seatLabel(s.turn)}`,
             PALETTE.brass,
             1150,
           );
         }
       } else if (ev.type === "hand_end") {
-        soundFX.playStoneClink();
         if (s.handSummary?.trickWinnerTeam === "nosotros") {
           this.sparkles.burst(cx, cy, PALETTE.brassLight, 12);
         }
       } else if (ev.type === "match_end") {
-        soundFX.playFanfare(s.matchWinner === "nosotros");
         if (s.matchWinner === "nosotros") {
           this.sparkles.burst(cx, cy - 30, PALETTE.brassLight, 20);
           this.sparkles.burst(cx - 70, cy + 10, PALETTE.acceptBorder, 12);
@@ -1579,8 +1589,8 @@ export class TrucoGameApp {
       const activeActor = this.getActiveActor();
       const activeTeam = activeActor ? getPlayerTeam(activeActor) : null;
       const customSbLabels =
-        this.isOnlineMatch && s.config.mode === "1v1" && this.onlineSeatNames.cpu
-          ? { ellos: this.onlineSeatNames.cpu }
+        this.isOnlineMatch && s.config.mode === "1v1"
+          ? { ellos: this.seatLabel("cpu") }
           : undefined;
       this.scoreboard.update(
         s.scores,
@@ -1606,10 +1616,6 @@ export class TrucoGameApp {
       if (this.isOnlineMatch && hasMidHandProgress) {
         this.isDealing = false;
         this.deckGroup.visible = true;
-        this.viraInfoBg.visible = true;
-        this.viraInfoTxt.visible = true;
-        this.viraInfoBg.alpha = 1;
-        this.viraInfoTxt.alpha = 1;
         this.updateSeatBadges();
         this.updateTurnIndicator();
         this.positionPartnerComms();
@@ -1627,8 +1633,8 @@ export class TrucoGameApp {
     const activeActor = this.getActiveActor();
     const activeTeam = activeActor ? getPlayerTeam(activeActor) : null;
     const customSbLabels =
-      this.isOnlineMatch && s.config.mode === "1v1" && this.onlineSeatNames.cpu
-        ? { ellos: this.onlineSeatNames.cpu }
+      this.isOnlineMatch && s.config.mode === "1v1"
+        ? { ellos: this.seatLabel("cpu") }
         : undefined;
     this.scoreboard.update(
       s.scores,
@@ -1660,25 +1666,27 @@ export class TrucoGameApp {
     const { cy, cardScale } = this.getArenaMetrics();
 
     if (seat === "player") {
-      return { x: w / 2, y: compact ? h - 224 : h - 186 * Math.max(0.84, cardScale) };
+      return compact ? { x: this.mobileSeats().handX, y: this.mobileSeats().handY } :
+        { x: w / 2, y: h - 186 * Math.max(0.84, cardScale) };
     }
     if (seat === "partner" || (!isFour && seat === "cpu")) {
       return {
-        x: compact ? w * 0.24 : w / 2,
-        y: compact ? 116 : 122 * Math.max(0.85, cardScale),
+        x: compact ? this.mobileSeats().northX : w / 2,
+        y: compact ? this.mobileSeats().northY : 122 * Math.max(0.85, cardScale),
       };
     }
     if (seat === "cpu2") {
       return { x: compact ? 52 : Math.max(106, w * 0.13), y: cy };
     }
     // cpu (Rival Der en 2v2)
-    return { x: compact ? w - 52 : Math.min(w - 106, w * 0.87), y: cy };
+    return { x: compact ? this.mobileSeats().tableWidth - 52 : Math.min(w - 106, w * 0.87), y: cy };
   }
 
   private getSeatHandTarget(
     seat: PlayerId,
     idx: number,
     totalCount: number,
+    revealed = false,
   ): { x: number; y: number; rot: number; scale: number } {
     const w = this.app.screen.width;
     const compact = this.isCompactLayout();
@@ -1697,13 +1705,13 @@ export class TrucoGameApp {
 
     if (seat === "partner" || (!isFour && seat === "cpu")) {
       const offset = idx - (totalCount - 1) / 2;
-      const topScale = compact ? 0.43 : cardScale * 0.64;
-      const centerX = compact ? w * 0.21 : w / 2;
-      const spreadX = compact ? 26 : 74 * topScale;
+      const topScale = compact ? (revealed ? 0.48 : 0.43) : cardScale * (revealed ? 0.72 : 0.64);
+      const centerX = compact ? this.mobileSeats().northX : w / 2;
+      const spreadX = compact ? (revealed ? 32 : 26) : (revealed ? 82 : 74) * topScale;
       return {
         x: centerX + offset * spreadX,
         y: compact
-          ? 98 + Math.abs(offset) * 3
+          ? this.mobileSeats().northY + Math.abs(offset) * 3
           : 132 * Math.max(0.88, cardScale) + Math.abs(offset) * 3,
         rot: -offset * 0.07,
         scale: topScale,
@@ -1712,20 +1720,20 @@ export class TrucoGameApp {
 
     // Asientos laterales en 2v2 (cpu2 Izq, cpu Der)
     const isLeft = seat === "cpu2";
-    const sideScale = compact ? 0.36 : cardScale * 0.56;
+    const sideScale = compact ? (revealed ? 0.42 : 0.36) : cardScale * (revealed ? 0.66 : 0.56);
     const sideX = isLeft
       ? compact
-        ? 30
+        ? 42
         : Math.max(76, w * 0.095)
       : compact
-        ? w - 30
+        ? this.mobileSeats().tableWidth - 42
         : Math.min(w - 76, w * 0.905);
-    const spreadY = compact ? 24 : 44 * sideScale;
+    const spreadY = compact ? 10 : 44 * sideScale;
     const offset = idx - (totalCount - 1) / 2;
     return {
-      x: sideX,
+      x: sideX + (revealed ? (isLeft ? 10 : -10) : 0),
       y: cy + offset * spreadY,
-      rot: isLeft ? Math.PI / 2 + offset * 0.05 : -Math.PI / 2 - offset * 0.05,
+      rot: revealed ? 0 : (isLeft ? 1 : -1) * (Math.PI / 2 + offset * 0.05),
       scale: sideScale,
     };
   }
@@ -1745,7 +1753,7 @@ export class TrucoGameApp {
     const manoIdx = seats.indexOf(s.mano);
     const dealerIdx = (manoIdx - 1 + seats.length) % seats.length;
     const dealer = seats[dealerIdx];
-    const dealerLabel = getPlayerLabel(dealer, s.config.mode);
+    const dealerLabel = this.seatLabel(dealer);
 
     const compact = this.isCompactLayout();
     const { cx, cy, cardScale } = this.getArenaMetrics();
@@ -1757,10 +1765,8 @@ export class TrucoGameApp {
     const deckScale = compact ? 0.43 : Math.max(0.72, cardScale);
 
     this.isDealing = true;
-    this.actionBar.removeChildren();
+    this.clearActionBar();
     this.deckGroup.visible = false;
-    this.viraInfoBg.visible = false;
-    this.viraInfoTxt.visible = false;
     this.updateSeatBadges();
 
     for (const cv of this.cardViews.values()) {
@@ -1783,8 +1789,7 @@ export class TrucoGameApp {
     this.dealFxContainer.addChild(shuffleContainer);
 
     const setDealBanner = (text: string) => {
-      this.turnPill.setState(true, text, "urgent");
-      this.positionTurnAndHelper();
+      this.setTurnStatus(text, true);
     };
 
     const getInspectPoint = (seat: PlayerId, isDealerSelf: boolean): { x: number; y: number } => {
@@ -1878,8 +1883,8 @@ export class TrucoGameApp {
       if (manoFirstCv && manoFirstCard) {
         const antepiePeek = getInspectPoint(antepieSeat, false);
         const manoTarget = this.getSeatHandTarget(manoSeat, 0, 3);
-        const antepieLbl = getPlayerLabel(antepieSeat, s.config.mode);
-        const manoLbl = getPlayerLabel(manoSeat, s.config.mode);
+        const antepieLbl = this.seatLabel(antepieSeat);
+        const manoLbl = this.seatLabel(manoSeat);
         const isHumanPeeking = antepieSeat === "player";
         const scale = isHumanPeeking ? humanPeekScale : botPeekScale;
         const holdMs = isHumanPeeking ? 760 : 480;
@@ -1948,7 +1953,7 @@ export class TrucoGameApp {
       if (trasFirstCv && trasFirstCard) {
         const dealerPeek = getInspectPoint(dealer, true);
         const trasTarget = this.getSeatHandTarget(trasmanoSeat, 0, 3);
-        const trasLbl = getPlayerLabel(trasmanoSeat, s.config.mode);
+        const trasLbl = this.seatLabel(trasmanoSeat);
         const isHumanPeeking = dealer === "player";
         const scale = isHumanPeeking ? humanPeekScale : botPeekScale;
         const holdMs = isHumanPeeking ? 760 : 500;
@@ -2108,16 +2113,10 @@ export class TrucoGameApp {
       }
       this.isDealing = false;
       this.deckGroup.visible = true;
-      this.viraInfoBg.visible = true;
-      this.viraInfoTxt.visible = true;
-      this.viraInfoBg.alpha = 0;
-      this.viraInfoTxt.alpha = 0;
       this.positionDeckAndVira(false);
-      this.tweens.to(this.viraInfoBg, { alpha: 1 }, 200);
-      this.tweens.to(this.viraInfoTxt, { alpha: 1 }, 200);
 
       if (!this.isCompactLayout()) {
-        const manoLabel = getPlayerLabel(s.mano, s.config.mode);
+        const manoLabel = this.seatLabel(s.mano);
         const isOurMano = getPlayerTeam(s.mano) === "nosotros";
         this.centerToast.show(
           `Mano #${s.handNumber} · Sale ${manoLabel}`,
@@ -2159,6 +2158,11 @@ export class TrucoGameApp {
         : isAlly
           ? PALETTE.inkLight
           : PALETTE.inkSecondary;
+      badge.txt.scale.set(1);
+      if (compact) {
+        const maxWidth = badge === this.seatBadges.partner ? this.mobileSeats().tableWidth * 0.64 : 66;
+        badge.txt.scale.set(Math.min(1, maxWidth / badge.txt.width));
+      }
       const bw = Math.max(compact ? 42 : 76, badge.txt.width + (compact ? 14 : 20));
       const bh = compact ? 20 : 24;
       const borderColor = isActive
@@ -2207,7 +2211,7 @@ export class TrucoGameApp {
 
   private updateTurnIndicator(): void {
     if (this.inMenu) {
-      this.turnPill.setState(false, "");
+      this.setTurnStatus("");
       return;
     }
 
@@ -2216,12 +2220,11 @@ export class TrucoGameApp {
     const compact = this.isCompactLayout();
 
     if (this.pendingAction) {
-      this.turnPill.setState(true, this.pendingAction.label, "player");
-      this.positionTurnAndHelper();
+      this.setTurnStatus(this.pendingAction.label);
       return;
     }
     if (!active) {
-      this.turnPill.setState(false, "");
+      this.setTurnStatus("");
       return;
     }
 
@@ -2240,32 +2243,24 @@ export class TrucoGameApp {
     if (active === "player") {
       const legal = this.engine.getLegalActions("player");
       if (this.burnMode) {
-        this.turnPill.setState(true, "Modo quemar · Toca una carta", "urgent");
+        this.setTurnStatus("Modo quemar · Toca una carta", true);
       } else if (legal.mustCallFlorALey) {
-        this.turnPill.setState(true, "Canta tu Flor a ley", "urgent");
+        this.setTurnStatus("Canta tu Flor a ley", true);
       } else if (s.phase === "AWAITING_TRUCO") {
         const lvl = s.truco.pendingLevel ?? 1;
-        this.turnPill.setState(true, `Responde ${TRUCO_LEVEL_NAMES[lvl]}`, "urgent");
+        this.setTurnStatus(`Responde ${TRUCO_LEVEL_NAMES[lvl]}`, true);
       } else if (s.phase === "AWAITING_ENVIDO") {
-        this.turnPill.setState(true, `Responde Envido${compactSuffix}`, "urgent");
+        this.setTurnStatus(`Responde Envido${compactSuffix}`, true);
       } else if (s.phase === "AWAITING_FLOR") {
-        this.turnPill.setState(true, `Responde Flor${compactSuffix}`, "urgent");
+        this.setTurnStatus(`Responde Flor${compactSuffix}`, true);
       } else if (s.ley.declaredBy.includes("player") && s.trickIndex === 0) {
-        this.turnPill.setState(true, `Tu turno · A Ley${compactSuffix}`, "player");
+        this.setTurnStatus(`Tu turno · A Ley${compactSuffix}`);
       } else {
-        this.turnPill.setState(
-          true,
-          compact ? `Tu turno${compactSuffix}` : "Tu turno · Juega o canta",
-          "player",
-        );
+        this.setTurnStatus(`Tu turno${compactSuffix}`);
       }
     } else {
-      const who =
-        this.isOnlineMatch && this.onlineSeatNames[active]
-          ? this.onlineSeatNames[active]!
-          : getPlayerLabel(active, s.config.mode);
+      const who = this.seatLabel(active);
       const isOffline = this.isOnlineMatch && this.onlineOfflineSeats.has(active);
-      const modeStyle = getPlayerTeam(active) === "nosotros" ? "player" : "cpu";
       const label = compact
         ? `${who}${isOffline ? " (Bot)" : ""}${compactSuffix}`
         : isOffline
@@ -2273,38 +2268,27 @@ export class TrucoGameApp {
           : s.phase === "PLAYING"
             ? `Turno de ${who}`
             : `${who} respondiendo`;
-      this.turnPill.setState(true, label, modeStyle);
+      this.setTurnStatus(label);
     }
-
-    this.positionTurnAndHelper();
   }
 
-  private positionTurnAndHelper(): void {
+  private setTurnStatus(label: string, urgent = false): void {
+    this.turnStatus.text = label;
+    this.turnStatus.style.fill = urgent ? PALETTE.brassLight : PALETTE.inkSecondary;
+    this.turnStatus.scale.set(1);
     const w = this.app.screen.width;
-    const h = this.app.screen.height;
-    const compact = this.isCompactLayout();
-    const { cardScale } = this.getArenaMetrics();
+    const online = this.isOnlineMatch;
+    const available = this.isShortLandscape() ? w - 2 * (online ? 210 : 165) :
+      this.isCompactLayout() ? w - 144 : w - (online ? 626 : 510);
+    this.turnStatus.scale.set(Math.min(1, available / Math.max(1, this.turnStatus.width)));
+  }
 
-    if (compact) {
-      if (this.canUsePartnerComms()) {
-        // Dejar espacio limpio a la derecha para el botón "Comp."
-        this.turnPill.setMaxWidth(Math.max(150, w - 128));
-        this.turnPill.position.set((w - 108) / 2, h - 294);
-      } else {
-        this.turnPill.setMaxWidth(w - 28);
-        this.turnPill.position.set(w / 2, h - 294);
-      }
-      this.handHelperBg.visible = false;
-      this.handHelperTxt.visible = false;
-      return;
-    }
-
-    // Escritorio: siempre bien despejado por encima de las cartas del jugador (sin solapar!)
-    this.turnPill.setMaxWidth(w - 80);
-    this.handHelperBg.visible = true;
-    this.handHelperTxt.visible = true;
-    this.turnPill.position.set(w / 2, h - 266 * Math.max(0.84, cardScale));
-
+  private positionHandHelper(): void {
+    const { width: w, height: h } = this.app.screen;
+    const visible = !this.isCompactLayout();
+    this.handHelperBg.visible = visible;
+    this.handHelperTxt.visible = visible;
+    if (!visible) return;
     const helperY = h - 98;
     const helperX = Math.max(122, Math.min(184, w * 0.14));
     this.handHelperBg.position.set(helperX, helperY);
@@ -2352,39 +2336,6 @@ export class TrucoGameApp {
     manoChipTxt.anchor.set(0.5);
     manoChipTxt.position.set(chipLeft + 20 + (chipW - 24) / 2, -60);
     this.deckGroup.addChild(manoChipBg, manoCrown, manoChipTxt);
-
-    const perico = getPericoSpec(s.vira);
-    const perica = getPericaSpec(s.vira);
-    const suitName = SUIT_NAMES[s.vira.suit];
-    const pNote = s.vira.rank === 11 ? "Rey (12)" : "11";
-    const paNote = s.vira.rank === 10 ? "Rey (12)" : "10";
-    void perico;
-    void perica;
-
-    if (this.isCompactLayout()) {
-      this.viraInfoTxt.style.fontSize = 9.5;
-      this.viraInfoTxt.style.lineHeight = 13;
-      this.viraInfoTxt.text = `Vira ${s.vira.rank} ${suitName}\nP: ${pNote} · Pa: ${paNote}`;
-    } else {
-      this.viraInfoTxt.style.fontSize = 11;
-      this.viraInfoTxt.style.lineHeight = 15.5;
-      this.viraInfoTxt.text = `Vira: ${getCardName(s.vira)}\nPerico ${pNote} ${suitName}  ·  Perica ${paNote} ${suitName}`;
-    }
-
-    this.redrawViraInfoPill();
-  }
-
-  private redrawViraInfoPill(): void {
-    const compact = this.isCompactLayout();
-    const padX = compact ? 9 : 14;
-    const padY = compact ? 4 : 7;
-    const w = Math.max(compact ? 104 : 185, this.viraInfoTxt.width + padX * 2);
-    const h = this.viraInfoTxt.height + padY * 2;
-    this.viraInfoBg.clear();
-    this.viraInfoBg
-      .roundRect(-w / 2, -h / 2, w, h, 8)
-      .fill({ color: PALETTE.surfaceDark, alpha: 0.9 })
-      .stroke({ width: 1, color: PALETTE.borderSubtle, alpha: 0.9 });
   }
 
   private rebuildHandCards(): void {
@@ -2465,7 +2416,7 @@ export class TrucoGameApp {
       this.inMenu ||
       this.isDealing ||
       this.pendingAction ||
-      this.rulesModal.visible ||
+      this.rulesModal.open ||
       this.partnerCommDrawer.visible
     ) {
       return false;
@@ -2485,11 +2436,12 @@ export class TrucoGameApp {
     const h = this.app.screen.height;
 
     if (this.isCompactLayout()) {
-      const slotSpacing = Math.min(116, Math.floor((w - 36) / 3));
+      const seats = this.mobileSeats();
+      const slotSpacing = Math.min(this.isShortLandscape() ? 77 : 116, Math.floor((w - 36) / 3));
       const cardScale = Math.max(0.56, Math.min(0.75, (slotSpacing - 12) / CARD_WIDTH));
       return {
-        cx: w / 2,
-        cy: Math.max(290, Math.min(h * 0.40, h - 460)),
+        cx: seats.northX,
+        cy: seats.centerY,
         cardScale,
       };
     }
@@ -2506,18 +2458,10 @@ export class TrucoGameApp {
     const w = this.app.screen.width;
     const h = this.app.screen.height;
     const mano = this.engine.getState().mano;
-    const { cy } = this.getArenaMetrics();
 
     if (this.isCompactLayout()) {
-      if (mano === "player") {
-        return { x: w * 0.81, y: Math.min(h - 392, cy + 118) };
-      }
-      if (this.is2v2() && mano === "cpu2") {
-        // Rival Izq (Oeste) es Mano -> esquina superior/media izquierda
-        return { x: w * 0.21, y: Math.min(h - 392, cy + 118) };
-      }
-      // CPU (1v1), Compañero o Rival Der -> arriba-derecha
-      return { x: w * 0.80, y: 102 };
+      const seats = this.mobileSeats();
+      return { x: seats.tableWidth - 45, y: seats.northY - 6 };
     }
 
     // Desktop: 4 cuadrantes limpios fuera de las manos laterales y del botón Compañero
@@ -2540,29 +2484,13 @@ export class TrucoGameApp {
     const { cardScale } = this.getArenaMetrics();
     const deckPos = this.getDeckScreenPos();
     const deckScale = compact ? 0.43 : Math.max(0.72, cardScale);
-    const infoOffsetX = compact ? -4 : -6;
-    const infoOffsetY = compact ? 44 : 88 * deckScale;
 
     this.deckGroup.scale.set(deckScale);
 
     if (animate) {
       this.tweens.to(this.deckGroup, { x: deckPos.x, y: deckPos.y }, 380, Easing.easeOutCubic);
-      this.tweens.to(
-        this.viraInfoBg,
-        { x: deckPos.x + infoOffsetX, y: deckPos.y + infoOffsetY },
-        380,
-        Easing.easeOutCubic,
-      );
-      this.tweens.to(
-        this.viraInfoTxt,
-        { x: deckPos.x + infoOffsetX, y: deckPos.y + infoOffsetY },
-        380,
-        Easing.easeOutCubic,
-      );
     } else {
       this.deckGroup.position.set(deckPos.x, deckPos.y);
-      this.viraInfoBg.position.set(deckPos.x + infoOffsetX, deckPos.y + infoOffsetY);
-      this.viraInfoTxt.position.set(deckPos.x + infoOffsetX, deckPos.y + infoOffsetY);
     }
   }
 
@@ -2581,12 +2509,14 @@ export class TrucoGameApp {
     const h = this.app.screen.height;
 
     if (this.isCompactLayout()) {
-      const scale = Math.max(0.68, Math.min(0.86, (w - 36) / 335));
-      const spread = Math.min(104 * scale, (w - 108) / Math.max(1, count - 0.1));
+      const seats = this.mobileSeats();
+      const handWidth = this.isShortLandscape() ? w - seats.tableWidth : w;
+      const scale = Math.min(0.86, (handWidth - 24) / 310, this.isShortLandscape() ? (h - 184) / 168 : Math.max(0.6, (h - 295) / 345));
+      const spread = Math.min(104 * scale, (handWidth - 98 * scale - 24) / Math.max(1, count - 1));
       const offset = idx - (count - 1) / 2;
       return {
-        x: w / 2 + offset * spread,
-        y: h - 196 - Math.abs(offset) * 4,
+        x: seats.handX + offset * spread,
+        y: seats.handY - Math.abs(offset) * 4,
         rot: offset * 0.055,
         scale,
       };
@@ -2598,7 +2528,7 @@ export class TrucoGameApp {
     const offset = idx - (count - 1) / 2;
     return {
       x: w / 2 + offset * spread,
-      y: h - 154 * Math.max(0.84, cardScale) - Math.abs(offset) * 4,
+      y: h - 176 * Math.max(0.84, cardScale) - Math.abs(offset) * 4,
       rot: offset * 0.055,
       scale,
     };
@@ -2722,96 +2652,27 @@ export class TrucoGameApp {
   private positionAllCards(isDealAnimation: boolean): void {
     this.ensureCardViewsForState();
     const s = this.engine.getState();
-    const w = this.app.screen.width;
     const compact = this.isCompactLayout();
     const isFour = this.is2v2();
     const { cx, cy, cardScale } = this.getArenaMetrics();
 
-    // 1) Manos restantes de todos los bots
-    const topSeat: PlayerId = isFour ? "partner" : "cpu";
-    const topHand = s.hands[topSeat] ?? [];
-    const revealTop = this.shouldRevealSeatAtHandEnd(topSeat);
-
-    topHand.forEach((c, idx) => {
-      const cv = this.cardViews.get(`${topSeat}_${c.id}`);
-      if (!cv) return;
-      cv.setFaceUp(revealTop);
-      cv.alpha = 1;
-      cv.zIndex = 50 + idx;
-      const offset = idx - (topHand.length - 1) / 2;
-      const topScale = revealTop
-        ? compact
-          ? 0.48
-          : cardScale * 0.72
-        : compact
-          ? 0.43
-          : cardScale * 0.64;
-      const centerX = compact ? w * 0.21 : w / 2;
-      const spreadX = revealTop ? (compact ? 32 : 82 * topScale) : compact ? 26 : 74 * topScale;
-      const targetX = centerX + offset * spreadX;
-      const targetY = compact
-        ? 98 + Math.abs(offset) * 3
-        : 132 * Math.max(0.88, cardScale) + Math.abs(offset) * 3;
-      const rot = -offset * 0.07;
-      const dur = isDealAnimation ? 340 + idx * 85 : 240;
-      this.tweens.to(
-        cv,
-        { x: targetX, y: targetY, rotation: rot, scaleX: topScale, scaleY: topScale },
-        dur,
-        Easing.easeOutCubic,
-      );
-    });
-
-    // Asientos laterales en 2 vs 2 (West = cpu2 Rival Izq, East = cpu Rival Der)
-    if (isFour) {
-      const sideSeats: Array<{ seat: "cpu2" | "cpu"; isLeft: boolean }> = [
-        { seat: "cpu2", isLeft: true },
-        { seat: "cpu", isLeft: false },
-      ];
-
-      for (const { seat, isLeft } of sideSeats) {
-        const hand = s.hands[seat] ?? [];
-        const revealSide = this.shouldRevealSeatAtHandEnd(seat);
-        const sideScale = revealSide
-          ? compact
-            ? 0.42
-            : cardScale * 0.66
-          : compact
-            ? 0.36
-            : cardScale * 0.56;
-        const sideX = isLeft
-          ? compact
-            ? 30
-            : Math.max(76, w * 0.095)
-          : compact
-            ? w - 30
-            : Math.min(w - 76, w * 0.905);
-        const sideY = cy;
-        const spreadY = compact ? 24 : 44 * sideScale;
-
-        hand.forEach((c, idx) => {
-          const cv = this.cardViews.get(`${seat}_${c.id}`);
-          if (!cv) return;
-          cv.setFaceUp(revealSide);
-          cv.alpha = 1;
-          cv.zIndex = 50 + idx;
-          const offset = idx - (hand.length - 1) / 2;
-          const rot = revealSide ? 0 : isLeft ? Math.PI / 2 + offset * 0.05 : -Math.PI / 2 - offset * 0.05;
-          const dur = isDealAnimation ? 360 + idx * 85 : 240;
-          this.tweens.to(
-            cv,
-            {
-              x: sideX + (revealSide ? (isLeft ? 10 : -10) : 0),
-              y: sideY + offset * spreadY,
-              rotation: rot,
-              scaleX: sideScale,
-              scaleY: sideScale,
-            },
-            dur,
-            Easing.easeOutCubic,
-          );
-        });
-      }
+    const northSeat = isFour ? "partner" : "cpu";
+    for (const seat of s.seats) {
+      if (seat === "player") continue;
+      const hand = s.hands[seat] ?? [];
+      const revealed = this.shouldRevealSeatAtHandEnd(seat);
+      hand.forEach((card, idx) => {
+        const view = this.cardViews.get(`${seat}_${card.id}`);
+        if (!view) return;
+        view.setFaceUp(revealed);
+        view.alpha = 1;
+        view.zIndex = 50 + idx;
+        const slot = this.getSeatHandTarget(seat, idx, hand.length, revealed);
+        const duration = isDealAnimation ? (seat === northSeat ? 340 : 360) + idx * 85 : 240;
+        this.tweens.to(view, {
+          x: slot.x, y: slot.y, rotation: slot.rot, scaleX: slot.scale, scaleY: slot.scale,
+        }, duration, Easing.easeOutCubic);
+      });
     }
 
     // 2) Mano del jugador humano (Sur)
@@ -2955,62 +2816,38 @@ export class TrucoGameApp {
   private updateStakeAndStatus(): void {
     const s = this.engine.getState();
     const compact = this.isCompactLayout();
-    const trucoVal = getTrucoAcceptPoints(s.truco.level, s.scores, s.config.targetScore);
+    const w = this.app.screen.width;
+    const stake = tableStake(this.engine);
+    const finished = s.phase === "HAND_OVER" || s.phase === "MATCH_OVER";
+    this.stakeBoard.visible = !this.inMenu && !finished;
+    this.stakeBoard.update(stake, compact ? (this.isShortLandscape() ? w - this.mobileSeats().tableWidth : w) - 16 : 248, compact);
+    this.tableTitle.text = `MANO ${String(s.handNumber).padStart(2, "0")}`;
 
-    if (compact) {
-      const trucoShort =
-        s.truco.level === 0
-          ? "1 pt"
-          : s.truco.level === 4
-            ? "Vale Juego"
-            : `${TRUCO_LEVEL_NAMES[s.truco.level]} ${trucoVal}`;
-      const extraTag =
-        s.envido.pendingSettlement && s.envido.accepted
-          ? ` · Env ${s.envido.stakedPoints ?? 2}`
-          : s.flor.pendingSettlement
-            ? s.flor.stage === "flor"
-              ? " · Flor"
-              : ` · C.Flor`
-            : s.ley.active
-              ? " · A Ley"
-              : "";
-      this.stakePillTxt.style.fontSize = 10.5;
-      this.stakePillTxt.text = `M${s.handNumber} · ${trucoShort}${extraTag}`;
-      const maxW = Math.max(88, this.app.screen.width - 284);
-      this.stakePillTxt.scale.set(
-        this.stakePillTxt.width > maxW ? maxW / this.stakePillTxt.width : 1,
-      );
-    } else {
-      const trucoDesc =
-        s.truco.level === 0
-          ? "Sin Truco (1)"
-          : s.truco.level === 4
-            ? "Vale Juego"
-            : `${TRUCO_LEVEL_NAMES[s.truco.level]} (${trucoVal})`;
-      const leyTag = s.ley.active ? " · A Ley" : "";
-      const envTag =
-        s.envido.pendingSettlement && s.envido.accepted
-          ? ` · Envido (${s.envido.stakedPoints ?? 2})`
-          : "";
-      const florTag = s.flor.pendingSettlement
-        ? s.flor.stage === "flor"
-          ? " · Flor"
-          : ` · Contraflor (${s.flor.stakedPoints ?? 6})`
-        : "";
-      this.stakePillTxt.style.fontSize = 12;
-      this.stakePillTxt.text = `Mano ${s.handNumber} · ${trucoDesc}${envTag}${florTag}${leyTag}`;
-      this.stakePillTxt.scale.set(1);
+    const emptyTable = s.tricks.every(trick => Object.keys(trick.played).length === 0);
+    this.tableCall.visible = this.tableCaller.visible = emptyTable && !finished && !this.inMenu;
+    if (this.tableCall.visible) {
+      const caller = s.phase === "AWAITING_TRUCO" ? s.truco.caller :
+        s.phase === "AWAITING_ENVIDO" ? s.envido.caller : s.phase === "AWAITING_FLOR" ? s.flor.caller : undefined;
+      const { cx, cy } = this.getArenaMetrics();
+      this.tableCall.text = caller ? (s.phase === "AWAITING_FLOR" && s.flor.stage === "flor" ? "Flor" : stake.name) : "Primera baza";
+      this.tableCall.style.fontSize = compact ? 24 : 37;
+      this.tableCall.alpha = caller ? 0.95 : 0.62;
+      this.tableCall.position.set(cx, cy - (compact ? 7 : 10));
+      const speaker = caller ?? s.turn;
+      this.tableCaller.text = speaker === "player"
+        ? (caller ? "TU CANTO" : "SALES TÚ")
+        : `${caller ? "Canta" : "Sale"} ${this.seatLabel(speaker)}`.toUpperCase();
+      this.tableCaller.position.set(cx, cy + (compact ? 17 : 22));
     }
-
     const pHand = s.initialHands.player ?? [];
     const pFlor = s.config.withFlor ? evaluateFlor(pHand, s.vira) : null;
     const pEnvido = calculateEnvidoPoints(pHand, s.vira);
     if (pFlor?.hasFlor) {
       this.handHelperTxt.text = pFlor.isReservada
         ? "Flor Reservada · se cobra al final"
-        : `Flor · ${pFlor.points} pts`;
+        : `Flor · ${pFlor.points} tantos`;
     } else {
-      this.handHelperTxt.text = `Tu Envido: ${pEnvido} pts`;
+      this.handHelperTxt.text = `Tienes ${pEnvido} de envido`;
     }
 
     const hhW = Math.max(138, this.handHelperTxt.width + 24);
@@ -3029,9 +2866,9 @@ export class TrucoGameApp {
     const compact = this.isCompactLayout();
     const w = this.app.screen.width;
     // 3 rombos limpios integrados dentro de la barra superior unificada
-    const dotCenterX = compact ? 158 + (w - 284) / 2 : w / 2;
-    const dotY = compact ? 37 : 41;
-    const spacing = compact ? 16 : 20;
+    const dotCenterX = this.isShortLandscape() ? w / 2 + 39 : compact ? w - 32 : w / 2;
+    const dotY = this.isShortLandscape() ? 16 : compact ? 123 : 41;
+    const spacing = compact ? 11 : 20;
     const r = compact ? 4.2 : 4.8;
 
     this.trickDotsG.clear();
@@ -3062,273 +2899,57 @@ export class TrucoGameApp {
     }
   }
 
-  private rebuildActionBar(): void {
-    this.actionBar.removeChildren();
-    if (this.inMenu || this.isDealing || this.pendingAction) return;
-
-    const s = this.engine.getState();
-    const legal = this.engine.getLegalActions("player");
-    const compact = this.isCompactLayout();
-
-    interface BtnSpec {
-      label: string;
-      theme: ButtonTheme;
-      width?: number;
-      drawIcon?: (g: Graphics, color: number) => void;
-      onClick: () => void;
-    }
-
-    const row1: BtnSpec[] = [];
-    const row2: BtnSpec[] = [];
-
-    if (legal.canCallFlor) {
-      const aLeySuffix = legal.mustCallFlorALey ? " (A Ley)" : "";
-      row1.push({
-        label: `Flor${aLeySuffix}`,
-        theme: "primary",
-        width: legal.mustCallFlorALey ? 132 : 104,
-        drawIcon: (g, col) => drawIconFlor(g, 13, col),
-        onClick: () => this.dispatchPlayer({ type: "CALL_FLOR" }),
-      });
-    }
-
-    if (legal.canCallALey) {
-      row1.push({
-        label: "A Ley",
-        theme: "secondary",
-        width: 88,
-        onClick: () => this.dispatchPlayer({ type: "CALL_A_LEY" }),
-      });
-    }
-
-    if (s.phase === "AWAITING_FLOR" && legal.florResponses.length > 0) {
-      if (legal.florResponses.includes("quiero")) {
-        row1.push({
-          label: "Con Flor quiero",
-          theme: "accept",
-          width: 142,
-          onClick: () => this.dispatchPlayer({ type: "RESPOND_FLOR", choice: "quiero" }),
-        });
-      }
-      if (legal.florResponses.includes("no_quiero")) {
-        row1.push({
-          label: "No quiero",
-          theme: "ghost",
-          width: 108,
-          onClick: () => this.dispatchPlayer({ type: "RESPOND_FLOR", choice: "no_quiero" }),
-        });
-      }
-      if (legal.florResponses.includes("achico")) {
-        row1.push({
-          label: "Me achico",
-          theme: "ghost",
-          width: 112,
-          onClick: () => this.dispatchPlayer({ type: "RESPOND_FLOR", choice: "achico" }),
-        });
-      }
-      if (legal.florResponses.includes("contraflor")) {
-        row2.push({
-          label: "Contraflor (6)",
-          theme: "primary",
-          width: 132,
-          onClick: () => this.dispatchPlayer({ type: "RESPOND_FLOR", choice: "contraflor" }),
-        });
-      }
-      if (legal.florResponses.includes("contraflor_resto")) {
-        row2.push({
-          label: "Contraflor al Resto",
-          theme: "danger",
-          width: 158,
-          onClick: () =>
-            this.dispatchPlayer({ type: "RESPOND_FLOR", choice: "contraflor_resto" }),
-        });
-      }
-    }
-
-    if (s.phase === "AWAITING_ENVIDO" && legal.canRespondEnvido) {
-      const stakes = this.engine.getEnvidoStakes(s.envido.chain);
-      row1.push({
-        label: `Quiero (${stakes.accept})`,
-        theme: "accept",
-        width: 136,
-        onClick: () => this.dispatchPlayer({ type: "RESPOND_ENVIDO", accept: true }),
-      });
-      row1.push({
-        label: `No quiero (${stakes.reject})`,
-        theme: "ghost",
-        width: 136,
-        onClick: () => this.dispatchPlayer({ type: "RESPOND_ENVIDO", accept: false }),
-      });
-    }
-
-    if (s.phase === "AWAITING_TRUCO" && legal.canRespondTruco) {
-      row1.push({
-        label: "Quiero",
-        theme: "accept",
-        width: 112,
-        onClick: () => this.dispatchPlayer({ type: "RESPOND_TRUCO", accept: true }),
-      });
-      row1.push({
-        label: "No quiero",
-        theme: "ghost",
-        width: 112,
-        onClick: () => this.dispatchPlayer({ type: "RESPOND_TRUCO", accept: false }),
-      });
-    }
-
-    if (legal.canCallTruco && legal.nextTrucoLevel) {
-      const targetRow = s.phase === "AWAITING_TRUCO" ? row1 : row1;
-      targetRow.push({
-        label: this.getTrucoButtonLabel(legal.nextTrucoLevel),
-        theme: "danger",
-        width: legal.nextTrucoLevel >= 3 ? 132 : 114,
-        onClick: () => this.dispatchPlayer({ type: "CALL_TRUCO" }),
-      });
-    }
-
-    for (const call of legal.envidoCalls) {
-      const isDouble = call === "envido" && s.envido.chain.includes("envido");
-      const label =
-        call === "envido"
-          ? isDouble
-            ? "Doble"
-            : "Envido"
-          : call === "real_envido"
-            ? compact && s.phase === "AWAITING_ENVIDO"
-              ? "Real"
-              : "Real Envido"
-            : compact && s.phase === "AWAITING_ENVIDO"
-              ? "Falta"
-              : "Falta Envido";
-      const targetRow =
-        s.phase === "AWAITING_ENVIDO" || s.phase === "AWAITING_TRUCO" ? row2 : row1;
-      targetRow.push({
-        label,
-        theme: "secondary",
-        width:
-          compact && s.phase === "AWAITING_ENVIDO"
-            ? 94
-            : compact
-              ? 100
-              : isDouble
-                ? 116
-                : 110,
-        onClick: () => this.dispatchPlayer({ type: "CALL_ENVIDO", call }),
-      });
-    }
-
-    if (legal.canBurnCard) {
-      row2.push({
-        label: this.burnMode ? "Quemar: ON" : "Quemar",
-        theme: this.burnMode ? "primary" : "ghost",
-        width: compact ? 104 : 104,
-        onClick: () => {
-          this.burnMode = !this.burnMode;
-          this.updateTurnIndicator();
-          this.rebuildActionBar();
-        },
-      });
-    }
-
-    if (legal.canIrseAlMazo) {
-      row2.push({
-        label: "Al mazo",
-        theme: "ghost",
-        width: 96,
-        onClick: () => this.dispatchPlayer({ type: "IRSE_AL_MAZO" }),
-      });
-    }
-
-    const allSpecs = [...row1, ...row2];
-    if (allSpecs.length === 0) return;
-
-    const maxW = this.app.screen.width - 24;
-    const gap = compact ? 8 : 10;
-    const btnH = compact ? 44 : 40;
-
-    // En móvil, separar limpiamente Fila 1 (decisión/cantos) y Fila 2 (escaladas/utilidad)
-    const activeRows =
-      compact && row1.length > 0 && row2.length > 0
-        ? [row1, row2]
-        : compact && allSpecs.length > 3
-          ? [allSpecs.slice(0, Math.ceil(allSpecs.length / 2)), allSpecs.slice(Math.ceil(allSpecs.length / 2))]
-          : [allSpecs];
-
-    if (activeRows.length === 2) {
-      const rowGap = 52;
-      activeRows.forEach((row, rIdx) => {
-        const rowW =
-          row.reduce((acc, sp) => acc + (sp.width ?? 104), 0) +
-          Math.max(0, row.length - 1) * gap;
-        const rowScale = rowW > maxW ? maxW / rowW : 1;
-        const rowContainer = new Container();
-        rowContainer.y = (rIdx - 0.5) * rowGap;
-        rowContainer.scale.set(rowScale);
-
-        let cx = -rowW / 2;
-        for (const sp of row) {
-          const bw = sp.width ?? 104;
-          const btn = new PillButton({
-            label: sp.label,
-            width: bw,
-            height: btnH,
-            fontSize: 13,
-            radius: 11,
-            theme: sp.theme,
-            drawIcon: sp.drawIcon,
-            onClick: sp.onClick,
-          });
-          btn.position.set(cx + bw / 2, 0);
-          rowContainer.addChild(btn);
-          cx += bw + gap;
-        }
-        this.actionBar.addChild(rowContainer);
-      });
-
-      this.actionBar.scale.set(1);
-      return;
-    }
-
-    const row = activeRows[0];
-    const totalW =
-      row.reduce((acc, sp) => acc + (sp.width ?? 112), 0) +
-      Math.max(0, row.length - 1) * gap;
-    const barScale = totalW > maxW ? maxW / totalW : 1;
-
-    let cursorX = -totalW / 2;
-    for (const sp of row) {
-      const bw = sp.width ?? 112;
-      const btn = new PillButton({
-        label: sp.label,
-        width: bw,
-        height: btnH,
-        fontSize: 13,
-        radius: 10,
-        theme: sp.theme,
-        drawIcon: sp.drawIcon,
-        onClick: sp.onClick,
-      });
-      btn.position.set(cursorX + bw / 2, 0);
-      this.actionBar.addChild(btn);
-      cursorX += bw + gap;
-    }
-
-    this.actionBar.scale.set(barScale);
+  private clearActionBar(): void {
+    for (const child of this.actionBar.removeChildren()) child.destroy({ children: true });
   }
 
-  private getTrucoButtonLabel(level: TrucoLevel): string {
-    switch (level) {
-      case 1:
-        return "Truco (3)";
-      case 2:
-        return "Retruco (6)";
-      case 3:
-        return "Vale Nueve (9)";
-      case 4:
-        return "Vale Juego";
-      default:
-        return "Truco";
-    }
+  private rebuildActionBar(): void {
+    this.clearActionBar();
+    if (this.inMenu || this.isDealing || this.pendingAction) return;
+    const choices = tableChoices(this.engine, this.burnMode);
+    if (!choices.length) return;
+
+    const compact = this.isCompactLayout();
+    const available = this.app.screen.width - (compact ? 24 : 48);
+    const gap = compact ? 5 : 8;
+    const maxColumns = compact ? Math.min(4, Math.max(3, Math.floor(available / 82))) : choices.length;
+    // Up to seven options fit in two touch rows, including the narrowest table.
+    const rows = compact && !this.isShortLandscape() && choices.length > maxColumns ? 2 : 1;
+    const cols = Math.ceil(choices.length / rows);
+    const width = Math.min(compact ? 148 : 138, Math.floor((available - (cols - 1) * gap) / cols));
+    const height = compact ? 46 : 52;
+    const rail = new Graphics();
+    this.actionBar.addChild(rail);
+    const baseY = this.app.screen.height - (compact ? 13 : 16);
+    this.actionBar.position.set(this.app.screen.width / 2, baseY);
+    const railW = cols * width + (cols - 1) * gap + 12;
+    const railH = rows * (height + gap) - gap + 10;
+    rail.roundRect(-railW / 2, -railH, railW, railH, 6)
+      .fill(0x14221c).stroke({ width: 1, color: 0x796b4d });
+    choices.forEach((choice, index) => {
+      const row = Math.floor(index / cols);
+      const rowCount = Math.min(cols, choices.length - row * cols);
+      const button = new PillButton({
+        bid: true, label: choice.action.type === "CALL_ENVIDO" && choice.action.call === "envido_cinco"
+          ? "Envido" : choice.label,
+        detail: choice.detail, width, height,
+        fontSize: compact ? 14.5 : 18, radius: 3,
+        theme: choice.tone === "lead" ? "danger" : choice.tone === "call" ? "paper" : "ghost",
+        onClick: () => {
+          if (this.rulesModal.open || this.partnerCommDrawer.visible) return;
+          if (choice.action.type === "TOGGLE_BURN") {
+            this.burnMode = !this.burnMode;
+            this.updateTurnIndicator();
+            this.rebuildActionBar();
+          } else {
+            this.dispatchPlayer(choice.action);
+          }
+        },
+      });
+      button.position.set((index % cols - (rowCount - 1) / 2) * (width + gap),
+        -5 - height / 2 - (rows - row - 1) * (height + gap));
+      this.actionBar.addChild(button);
+    });
   }
 
   private updateSummaryOverlay(): void {
@@ -3381,24 +3002,13 @@ export class TrucoGameApp {
       .stroke({ width: 1.6, color: ourWin ? PALETTE.brass : PALETTE.crimsonBorder });
     panel.addChild(bg);
 
-    const headingText = isMatchOver
-      ? ourWin
-        ? this.is2v2()
-          ? "Ganamos la partida"
-          : "Ganaste la partida"
-        : this.is2v2()
-          ? "Ellos ganaron la partida"
-          : "CPU ganó la partida"
-      : ourWin
-        ? this.is2v2()
-          ? "Ganamos la mano"
-          : "Ganaste la mano"
-        : this.is2v2()
-          ? "Ellos ganaron la mano"
-          : "CPU ganó la mano";
+    const result = isMatchOver ? "la partida" : "la mano";
+    const winner = ourWin
+      ? this.is2v2() ? "Ganamos" : "Ganaste"
+      : this.is2v2() ? "Ellos ganaron" : `${this.seatLabel("cpu")} ganó`;
 
     const heading = new Text({
-      text: headingText,
+      text: `${winner} ${result}`,
       style: {
         fontFamily: FONT_DISPLAY,
         fontSize: isNarrow ? 20 : 23,
@@ -3406,6 +3016,7 @@ export class TrucoGameApp {
         fill: ourWin ? PALETTE.brassLight : PALETTE.crimsonBorder,
       },
     });
+    heading.scale.set(Math.min(1, (cardW - 24) / heading.width));
     heading.anchor.set(0.5);
     heading.position.set(0, -cardH / 2 + 26);
     panel.addChild(heading);
@@ -3464,13 +3075,13 @@ export class TrucoGameApp {
         const halfOffset = cardW * 0.245;
         renderMiniGroup(
           -halfOffset,
-          `${getPlayerLabel(nSeat, s.config.mode)}: ${s.envido.nosotrosPoints}`,
+          `${this.seatLabel(nSeat)}: ${s.envido.nosotrosPoints}`,
           nCards,
           s.envido.winnerTeam === "nosotros",
         );
         renderMiniGroup(
           halfOffset,
-          `${getPlayerLabel(eSeat, s.config.mode)}: ${s.envido.ellosPoints}`,
+          `${this.seatLabel(eSeat)}: ${s.envido.ellosPoints}`,
           eCards,
           s.envido.winnerTeam === "ellos",
         );
@@ -3484,13 +3095,13 @@ export class TrucoGameApp {
           const halfOffset = cardW * 0.245;
           renderMiniGroup(
             -halfOffset,
-            `${getPlayerLabel(s.flor.nosotrosBestPlayer!, s.config.mode)}: ${s.flor.nosotrosPoints}`,
+            `${this.seatLabel(s.flor.nosotrosBestPlayer!)}: ${s.flor.nosotrosPoints}`,
             s.initialHands[s.flor.nosotrosBestPlayer!] ?? [],
             s.flor.winnerTeam === "nosotros",
           );
           renderMiniGroup(
             halfOffset,
-            `${getPlayerLabel(s.flor.ellosBestPlayer!, s.config.mode)}: ${s.flor.ellosPoints}`,
+            `${this.seatLabel(s.flor.ellosBestPlayer!)}: ${s.flor.ellosPoints}`,
             s.initialHands[s.flor.ellosBestPlayer!] ?? [],
             s.flor.winnerTeam === "ellos",
           );
@@ -3498,7 +3109,7 @@ export class TrucoGameApp {
           const owner = s.flor.winnerPlayer ?? s.flor.caller ?? "player";
           const ownerHand = s.initialHands[owner] ?? [];
           const ownerEval = evaluateFlor(ownerHand, s.vira);
-          const ownerLbl = getPlayerLabel(owner, s.config.mode);
+          const ownerLbl = this.seatLabel(owner);
           const ownerTitle = ownerEval.isReservada
             ? `Flor Reservada (${ownerLbl})`
             : `Flor ${ownerLbl} (${ownerEval.points} pts)`;
@@ -3517,8 +3128,14 @@ export class TrucoGameApp {
     } else if (s.handSummary && !s.handSummary.florText && !s.handSummary.envidoText) {
       lines.push(s.handSummary.reason);
     }
+    if (this.isOnlineMatch && this.roomClient.mySeat) {
+      for (let i = 0; i < lines.length; i++) {
+        lines[i] = formatOnlineSummaryText(lines[i], s.config.mode, this.roomClient.mySeat, (seat) => this.seatLabel(seat));
+      }
+    }
+    const rival = this.is2v2() ? getTeamLabel("ellos", s.config.mode) : this.seatLabel("cpu");
     lines.push(
-      `Marcador: ${getTeamLabel("nosotros", s.config.mode)} ${s.scores.nosotros}  —  ${getTeamLabel("ellos", s.config.mode)} ${s.scores.ellos}  (Meta ${s.config.targetScore})`,
+      `Marcador: ${getTeamLabel("nosotros", s.config.mode)} ${s.scores.nosotros}  —  ${rival} ${s.scores.ellos}  (Meta ${s.config.targetScore})`,
     );
 
     const body = new Text({
@@ -3596,7 +3213,7 @@ export class TrucoGameApp {
     const h = this.app.screen.height;
     const compact = this.isCompactLayout();
     const { cx, cy, cardScale } = this.getArenaMetrics();
-    const headerH = compact ? 54 : 60;
+    const headerH = this.headerHeight();
 
     this.tableBg.clear();
     const feltGrad = new FillGradient({
@@ -3613,7 +3230,7 @@ export class TrucoGameApp {
     });
 
     const pad = compact ? 6 : 12;
-    const topY = headerH + (compact ? 4 : 8);
+    const topY = this.waitingAtTable ? pad : headerH + (compact ? 4 : 8);
     const feltH = Math.max(40, h - topY - pad);
     const feltW = Math.max(40, w - pad * 2);
     const radius = compact ? 16 : 24;
@@ -3693,18 +3310,18 @@ export class TrucoGameApp {
 
     if (compact) {
       if (seat === "player") {
-        x = w / 2;
-        y = h - 134;
+        x = this.mobileSeats().handX;
+        y = this.mobileSeats().handY - 64;
       } else if (seat === "partner") {
-        x = w * 0.24;
-        y = 166;
+        x = this.mobileSeats().northX;
+        y = this.mobileSeats().northY + 42;
       } else if (seat === "cpu2") {
         x = 84;
         y = cy - 94;
       } else {
         // cpu: arriba-izquierda en 1v1, lado derecho en 2v2
-        x = isFour ? w - 84 : w * 0.24;
-        y = isFour ? cy - 94 : 154;
+        x = isFour ? this.mobileSeats().tableWidth - 84 : this.mobileSeats().northX;
+        y = isFour ? cy - 76 : this.mobileSeats().northY + 42;
       }
     } else {
       if (seat === "player") {
@@ -3733,8 +3350,9 @@ export class TrucoGameApp {
     const h = this.app.screen.height;
     const compact = this.isCompactLayout();
     const { cx, cy, cardScale } = this.getArenaMetrics();
-    const headerH = compact ? 54 : 60;
+    const headerH = this.headerHeight();
 
+    this.chat?.button.classList.toggle("compact", compact);
     this.buildTopControls(compact);
     this.buildPartnerCommBtn(compact);
     this.scoreboard.setCompact(compact);
@@ -3749,21 +3367,22 @@ export class TrucoGameApp {
       .stroke({ width: 1, color: PALETTE.brass, alpha: 0.34 });
 
     if (compact) {
-      this.scoreboard.scale.set(1);
-      this.scoreboard.position.set(10, 8);
-
-      // Centro entre scoreboard (158) y topControls (w - 126)
-      const centerX = 158 + (w - 284) / 2;
-      this.stakePillTxt.position.set(centerX, 18);
-
-      this.topControls.position.set(w - 26, 27);
-
+      const landscape = this.isShortLandscape();
+      const seats = this.mobileSeats();
+      const controlsWidth = this.isOnlineMatch ? 194 : 144;
+      const scoreWidth = Math.min(148, w - controlsWidth - 24);
+      this.scoreboard.setCompactWidth(scoreWidth);
+      this.scoreboard.position.set(8, 8);
+      this.tableTitle.position.set(landscape ? w / 2 - 24 : 38, landscape ? 16 : 123);
+      this.turnStatus.position.set(w / 2, landscape ? 36 : 123);
+      this.stakeBoard.position.set(landscape ? seats.tableWidth + 8 : 8, 54);
+      this.topControls.position.set(w - 30, 27);
       this.positionDeckAndVira(false);
 
-      // Etiquetas de asientos 2v2 en móvil
-      this.seatBadges.partner.container.position.set(w * 0.21, 140);
-      this.seatBadges.cpu2.container.position.set(32, cy - 66);
-      this.seatBadges.cpu.container.position.set(w - 32, cy - 66);
+      this.seatBadges.partner.container.position.set(seats.northX, seats.northY - 43);
+      const sideLabelY = cy - 50 >= seats.northY + 32 ? cy - 40 : cy + 42;
+      this.seatBadges.cpu2.container.position.set(40, sideLabelY);
+      this.seatBadges.cpu.container.position.set(seats.tableWidth - 40, sideLabelY);
 
       for (const seat of ["player", "cpu", "partner", "cpu2"] as PlayerId[]) {
         this.positionBubbleForSeat(seat);
@@ -3771,12 +3390,14 @@ export class TrucoGameApp {
 
       // Dock inferior con 2 filas táctiles cómodas (sin barra negra abajo)
       this.actionBar.position.set(w / 2, h - 64);
-      this.centerToast.position.set(w / 2, 82);
+      this.centerToast.position.set(w / 2, 143);
     } else {
       this.scoreboard.scale.set(1);
       this.scoreboard.position.set(20, 7);
 
-      this.stakePillTxt.position.set(w / 2, 20);
+      this.tableTitle.position.set(w / 2, 18);
+      this.turnStatus.position.set(w / 2, 39);
+      this.stakeBoard.position.set(30, 86);
       this.topControls.position.set(w - 58, 30);
 
       this.positionDeckAndVira(false);
@@ -3797,19 +3418,19 @@ export class TrucoGameApp {
       this.centerToast.position.set(cx, Math.max(226, cy - 156 * cardScale));
     }
 
+    this.positionHandHelper();
     this.positionPartnerComms();
     this.updatePartnerCommVisibility();
     this.partnerCommDrawer.layout(w, h);
-    this.rulesModal.layout(w, h);
     if (this.inMenu) {
-      this.buildMenuOverlay();
+      if (this.menuOverlay.visible) this.buildMenuOverlay();
     } else if (this.isDealing) {
       this.cancelDealChoreography(true);
     } else {
       this.rebuildDeckAndVira();
       this.updateSeatBadges();
       this.updateStakeAndStatus();
-      this.positionTurnAndHelper();
+      this.updateTurnIndicator();
       this.positionAllCards(false);
       this.updateTrickDots();
       this.rebuildActionBar();

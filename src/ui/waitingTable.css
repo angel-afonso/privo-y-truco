@@ -1,0 +1,115 @@
+.truco-mp-backdrop.at-table {
+  display: none;
+  padding: clamp(20px, 3.5vw, 52px);
+  background: transparent;
+  backdrop-filter: none;
+  overflow: auto;
+}
+.truco-mp-backdrop.at-table.open { display: block; }
+.at-table .truco-mp-card {
+  margin: auto; padding: 0; max-width: 1280px; max-height: none;
+  background: transparent; border: 0; box-shadow: none; overflow: visible;
+}
+.waiting-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding-bottom: 18px; border-bottom: 1px solid #d2bf884d;
+}
+.waiting-head h2, .waiting-center strong, .waiting-side h3, .waiting-seat strong {
+  font-family: var(--table-display, Georgia, serif);
+}
+.waiting-head h2 { color: #f6ecd7; font-size: clamp(28px, 3vw, 43px); line-height: 1.1; }
+.waiting-head p, .waiting-center small { margin-top: 5px; color: #d1dac8; font-size: 13px; }
+.waiting-layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(210px, 245px);
+  gap: clamp(15px, 3vw, 44px); align-items: center;
+  min-height: min(70dvh, 650px);
+}
+.waiting-places { position: relative; min-width: 0; height: clamp(324px, 64dvh, 565px); }
+.waiting-places::before {
+  content: ""; position: absolute; inset: 15% 8%; border: 3px double #c6ad7659;
+  border-radius: 50%; background: #061c132e; pointer-events: none;
+}
+.waiting-center {
+  position: absolute; inset: 30% 27%; display: flex; align-items: center; justify-content: center;
+  flex-direction: column; text-align: center;
+}
+.waiting-center strong { font-size: clamp(18px, 2.1vw, 30px); line-height: 1.05; text-wrap: balance; color: #f1e8d0; }
+.waiting-pack {
+  width: 37px; height: 54px; border-radius: 4px; border: 3px solid #e9dcb9; margin-bottom: 13px;
+  background: repeating-linear-gradient(45deg, transparent 0 4px, #e6c99b77 4px 5px),
+    repeating-linear-gradient(-45deg, #78493b 0 4px, #a5825a 4px 5px);
+  box-shadow: -2px 2px #b8a88a, -4px 4px #eee1c7; transform: rotate(-8deg);
+}
+.waiting-seat {
+  position: absolute; display: grid; justify-items: center; align-content: center; gap: 3px;
+  width: min(24%, 152px); min-height: 72px; padding: 5px 2px; border: 0; background: none;
+  color: #d5dccd; font-family: inherit; cursor: pointer; text-align: center;
+}
+.waiting-seat.sur { bottom: 0; left: 50%; transform: translateX(-50%); }
+.waiting-seat.norte { top: 0; left: 50%; transform: translateX(-50%); }
+.waiting-seat.este { top: 50%; right: 0; transform: translateY(-50%); }
+.waiting-seat.oeste { top: 50%; left: 0; transform: translateY(-50%); }
+.waiting-seat:disabled { cursor: default; opacity: 1; }
+.seat-mark {
+  width: 43px; height: 43px; border: 1px dashed #b6c8ac; border-radius: 50%;
+  display: grid; place-items: center; background: #163728; font-size: 20px;
+}
+.waiting-seat.occupied .seat-mark { border: 2px solid #c8ad78; background: #eee4cf; color: #314739; font-weight: 800; }
+.waiting-seat:enabled:hover .seat-mark { border-style: solid; background: #2b4936; }
+.waiting-seat strong { max-width: 100%; color: #faf0db; font-size: clamp(15px, 1.6vw, 21px); overflow-wrap: anywhere; }
+.waiting-seat small { font-size: 11px; line-height: 1.25; }
+.waiting-side {
+  padding: 21px; color: #f1e9d5; background: #102a20; border: 1px solid #687555;
+  border-radius: 5px; display: grid; gap: 14px;
+}
+.waiting-side p { font-size: 13px; line-height: 1.5; color: #d1d8c9; }
+.waiting-side h3 { margin: 0 0 12px; font-size: 22px; font-weight: 700; }
+.waiting-invite .truco-mp-label { color: #b7c6b3; }
+.waiting-invite .truco-mp-codeval {
+  display: block; width: fit-content; user-select: all; -webkit-user-select: all; cursor: text;
+  color: #f3d9a5; font: 700 23px/1.4 ui-monospace, monospace; letter-spacing: .09em; margin-bottom: 9px;
+}
+.waiting-invite p:not(:empty) { margin-top: 6px; }
+.waiting-rules summary { font-size: 14px; cursor: pointer; padding: 12px 0; min-height: 44px; }
+.waiting-options { display: flex; gap: 4px; margin-bottom: 4px; }
+.waiting-options button {
+  flex: 1; min-height: 44px; border: 1px solid #71816c; border-radius: 4px; background: transparent;
+  color: #e8eddf; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.waiting-options [aria-pressed="true"] { color: #213629; background: #e7dbc2; }
+.at-table :focus-visible { outline: 2px solid #ebcd92; outline-offset: 2px; }
+@media (max-width: 700px) {
+  .truco-mp-backdrop.at-table { padding: 20px 18px; }
+  .waiting-head { padding: 0 0 12px; gap: 8px; }
+  .waiting-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; min-height: auto; }
+  .waiting-center small { font-size: 11px; }
+  .waiting-pack { width: 26px; height: 37px; margin-bottom: 9px; }
+  .seat-mark { width: 34px; height: 34px; font-size: 16px; }
+  .waiting-side { padding: 14px; gap: 8px; }
+  .waiting-invite { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; }
+  .waiting-invite h3, .waiting-invite p { grid-column: 1 / -1; }
+  .waiting-invite h3 { margin-bottom: 5px; font-size: 19px; }
+  .waiting-invite .truco-mp-label { margin: 0; grid-column: 1; }
+  .waiting-invite .truco-mp-codeval { grid-column: 1; margin: 0; font-size: clamp(16px, 5vw, 22px); }
+  .waiting-invite button { grid-column: 2; grid-row: 2 / span 2; padding: 0 10px; min-height: 46px; }
+  .waiting-head > div:first-child { min-width: 0; }
+  .waiting-head-actions { flex: none; }
+  .waiting-head h2 { font-size: clamp(23px, 6.8vw, 30px); }
+  .waiting-places {
+    display: grid; grid-template: auto minmax(80px, 1fr) auto / minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 1fr);
+    align-items: center; gap: 4px; margin-top: 9px; height: auto; min-height: clamp(280px, 42dvh, 390px);
+  }
+  .waiting-seat, .waiting-center { position: static; width: 100%; }
+  .waiting-places .waiting-seat { transform: none; }
+  .waiting-center { grid-area: 2 / 2; }
+  .waiting-seat.norte, .waiting-seat.sur { grid-column: 1 / -1; width: auto; max-width: 75%; justify-self: center; }
+  .waiting-seat.norte { grid-row: 1; }
+  .waiting-seat.sur { grid-row: 3; }
+  .waiting-seat.este { grid-area: 2 / 3; }
+  .waiting-seat.oeste { grid-area: 2 / 1; }
+  .waiting-seat strong, .waiting-side p { overflow-wrap: anywhere; }
+  .waiting-center strong { font-size: clamp(16px, 4.8vw, 21px); }
+  .waiting-seat strong {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+  }
+}

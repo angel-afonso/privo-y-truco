@@ -13,12 +13,13 @@ import {
 } from "./icons";
 import { FONT_DISPLAY, FONT_UI, PALETTE } from "./theme";
 
-export type ButtonTheme = "primary" | "accept" | "danger" | "secondary" | "ghost";
+export type ButtonTheme = "primary" | "accept" | "danger" | "secondary" | "ghost" | "paper";
 
 const THEME_COLORS: Record<
   ButtonTheme,
   { bg: number; bgHover: number; border: number; borderAlpha: number; text: number }
 > = {
+  paper: { bg: PALETTE.ivoryWarm, bgHover: PALETTE.ivory, border: 0xb6a783, borderAlpha: 1, text: 0x26372b },
   primary: {
     bg: PALETTE.brass,
     bgHover: PALETTE.brassHover,
@@ -58,6 +59,8 @@ const THEME_COLORS: Record<
 
 export interface PillButtonOptions {
   label?: string;
+  bid?: boolean;
+  detail?: string;
   width?: number;
   height?: number;
   theme?: ButtonTheme;
@@ -75,6 +78,8 @@ export class PillButton extends Container {
   private bg: Graphics;
   private iconG: Graphics;
   private txt: Text;
+  private detail?: Text;
+  private bid: boolean;
   private btnW: number;
   private btnH: number;
   private radius: number;
@@ -87,6 +92,7 @@ export class PillButton extends Container {
 
   constructor(opts: PillButtonOptions) {
     super();
+    this.bid = Boolean(opts.bid);
     this.btnW = opts.width ?? 124;
     this.btnH = opts.height ?? 42;
     this.radius = opts.radius ?? 10;
@@ -99,7 +105,7 @@ export class PillButton extends Container {
     this.txt = new Text({
       text: opts.label ?? "",
       style: {
-        fontFamily: FONT_UI,
+        fontFamily: this.bid ? FONT_DISPLAY : FONT_UI,
         fontSize: opts.fontSize ?? 13.5,
         fontWeight: "700",
         fill: THEME_COLORS[this.theme].text,
@@ -108,6 +114,18 @@ export class PillButton extends Container {
     this.txt.anchor.set(0.5);
     this.addChild(this.bg, this.iconG, this.txt);
 
+    if (this.bid) {
+      this.accessible = true;
+      this.accessibleHint = [opts.label, opts.detail].filter(Boolean).join(", ");
+      this.txt.scale.set(Math.min(1, (this.btnW - 10) / this.txt.width));
+      if (opts.detail) {
+        this.detail = new Text({ text: opts.detail, style: {
+          fontFamily: FONT_UI, fontSize: 10.5, fontWeight: "600", fill: THEME_COLORS[this.theme].text,
+        } });
+        this.detail.anchor.set(0.5);
+        this.addChild(this.detail);
+      }
+    }
     this.eventMode = "static";
     this.cursor = "pointer";
     this.hitArea = new Rectangle(-this.btnW / 2, -this.btnH / 2, this.btnW, this.btnH);
@@ -136,7 +154,7 @@ export class PillButton extends Container {
       this.redraw();
     });
     this.on("pointertap", (e) => {
-      if (!this.enabled || e.button !== 0) return;
+      if (!this.enabled || (e.button !== undefined && e.button !== 0)) return;
       this.onClickCb();
     });
 
@@ -170,7 +188,7 @@ export class PillButton extends Container {
     const c = THEME_COLORS[this.theme];
     const hw = this.btnW / 2;
     const hh = this.btnH / 2;
-    const pressY = this.pressed ? 1.5 : 0;
+    const pressY = this.pressed ? 1.5 : this.bid && this.hovered ? -2 : 0;
 
     this.bg.clear();
 
@@ -212,7 +230,8 @@ export class PillButton extends Container {
         this.iconG.position.set(0, pressY);
       }
     } else {
-      this.txt.position.set(0, pressY);
+      this.txt.position.set(0, pressY + (this.detail ? -7 : 0));
+      this.detail?.position.set(0, pressY + 11);
     }
   }
 }
@@ -247,16 +266,16 @@ export class SegmentedToggle extends Container {
     this.bg = new Graphics();
     // Pista hundida oscura
     this.bg
-      .roundRect(-hw, -hh, w, h, 10)
-      .fill(PALETTE.surfaceRecessed)
-      .stroke({ width: 1, color: PALETTE.borderSubtle, alpha: 0.9 });
+      .roundRect(-hw, -hh, w, h, 4)
+      .fill(0xe0d6bf)
+      .stroke({ width: 1, color: 0xb5aa92, alpha: 0.9 });
 
     // Indicador activo en latón sobrio
     const activeX = opts.leftActive ? -hw + pad : pad;
     this.bg
-      .roundRect(activeX, -hh + pad, segW, h - pad * 2, 7.5)
-      .fill(PALETTE.brass)
-      .stroke({ width: 1, color: PALETTE.brassLight, alpha: 0.75 });
+      .roundRect(activeX, -hh + pad, segW, h - pad * 2, 2)
+      .fill(0x263e30)
+      .stroke({ width: 1, color: 0x334d3d, alpha: 0.75 });
     this.addChild(this.bg);
 
     this.leftTxt = new Text({
@@ -265,7 +284,7 @@ export class SegmentedToggle extends Container {
         fontFamily: FONT_UI,
         fontSize: 12.5,
         fontWeight: "700",
-        fill: opts.leftActive ? PALETTE.inkDark : PALETTE.inkSecondary,
+        fill: opts.leftActive ? PALETTE.ivory : 0x4d5448,
       },
     });
     this.leftTxt.anchor.set(0.5);
@@ -277,7 +296,7 @@ export class SegmentedToggle extends Container {
         fontFamily: FONT_UI,
         fontSize: 12.5,
         fontWeight: "700",
-        fill: !opts.leftActive ? PALETTE.inkDark : PALETTE.inkSecondary,
+        fill: !opts.leftActive ? PALETTE.ivory : 0x4d5448,
       },
     });
     this.rightTxt.anchor.set(0.5);
@@ -408,106 +427,6 @@ export class SpeechBubble extends Container {
     if (this.hideTimerMs <= 0) {
       this.visible = false;
     }
-  }
-}
-
-/**
- * Indicador sereno de estado/turno junto a la mano del jugador.
- * Sin saltos de escala ni colores estridentes; solo un punto vivo suave.
- */
-export class TurnSpotlightPill extends Container {
-  private bg: Graphics;
-  private dot: Graphics;
-  private txt: Text;
-  private pulse = 0;
-  private accentColor: number = PALETTE.acceptBorder;
-  private pillW = 132;
-  private maxW = 999;
-  private baseScale = 1;
-
-  constructor() {
-    super();
-    this.bg = new Graphics();
-    this.dot = new Graphics();
-    this.txt = new Text({
-      text: "",
-      style: {
-        fontFamily: FONT_UI,
-        fontSize: 12,
-        fontWeight: "700",
-        letterSpacing: 0.25,
-        fill: PALETTE.inkLight,
-      },
-    });
-    this.txt.anchor.set(0.5);
-    this.addChild(this.bg, this.dot, this.txt);
-    this.visible = false;
-  }
-
-  public setState(
-    visible: boolean,
-    label: string,
-    mode: "player" | "urgent" | "cpu" = "player",
-  ): void {
-    this.visible = visible;
-    if (!visible) return;
-
-    this.txt.text = label;
-    this.accentColor =
-      mode === "urgent"
-        ? PALETTE.brass
-        : mode === "player"
-          ? PALETTE.acceptBorder
-          : PALETTE.inkMuted;
-    const fillBg =
-      mode === "urgent"
-        ? 0x261a08
-        : mode === "player"
-          ? PALETTE.surfaceDark
-          : 0x0b1a14;
-    const borderColor =
-      mode === "urgent"
-        ? PALETTE.brass
-        : mode === "player"
-          ? PALETTE.borderMuted
-          : PALETTE.borderSubtle;
-
-    const w = Math.max(128, this.txt.width + 36);
-    this.pillW = w;
-    const h = 32;
-    this.bg.clear();
-    this.bg
-      .roundRect(-w / 2, -h / 2, w, h, 10)
-      .fill({ color: fillBg, alpha: 0.92 })
-      .stroke({ width: 1.25, color: borderColor, alpha: 0.9 });
-
-    this.txt.position.set(7, 0);
-    this.dot.position.set(-w / 2 + 14, 0);
-    this.redrawDot(1);
-    this.updateBaseScale();
-  }
-
-  public setMaxWidth(maxW: number): void {
-    this.maxW = Math.max(120, maxW);
-    this.updateBaseScale();
-  }
-
-  private updateBaseScale(): void {
-    this.baseScale = this.pillW > this.maxW ? this.maxW / this.pillW : 1;
-    this.scale.set(this.baseScale);
-  }
-
-  private redrawDot(alpha: number): void {
-    this.dot.clear();
-    this.dot.circle(0, 0, 5.5).fill({ color: this.accentColor, alpha: alpha * 0.25 });
-    this.dot.circle(0, 0, 3.2).fill({ color: this.accentColor, alpha: 0.95 });
-  }
-
-  public tick(deltaMS: number): void {
-    if (!this.visible) return;
-    this.pulse += deltaMS * 0.004;
-    const wave = 0.55 + 0.45 * Math.sin(this.pulse);
-    this.redrawDot(wave);
   }
 }
 
@@ -661,6 +580,7 @@ export class StoneScoreboard extends Container {
   private cpuScoreTxt: Text;
   private metaTxt: Text;
   private compact = false;
+  private compactWidth = 148;
 
   private lastScores: Record<TeamId, number> = { nosotros: 0, ellos: 0 };
   private lastTarget: 12 | 24 = 24;
@@ -737,6 +657,12 @@ export class StoneScoreboard extends Container {
     );
   }
 
+  public setCompactWidth(width: number): void {
+    if (this.compactWidth === width) return;
+    this.compactWidth = width;
+    this.redraw();
+  }
+
   public setCompact(compact: boolean): void {
     if (this.compact === compact) return;
     this.compact = compact;
@@ -773,7 +699,7 @@ export class StoneScoreboard extends Container {
 
     if (this.compact) {
       // Marcador compacto integrado en la barra superior (148 × 38)
-      const w = 148;
+      const w = this.compactWidth;
       const h = 38;
       this.bg
         .roundRect(0, 0, w, h, 9)
@@ -798,12 +724,12 @@ export class StoneScoreboard extends Container {
       }
 
       const oppShort = this.lastCustomLabels?.ellos
-        ? this.lastCustomLabels.ellos.slice(0, 6).toUpperCase()
+        ? this.lastCustomLabels.ellos.slice(0, w < 125 ? 3 : 6).toUpperCase()
         : is2v2
           ? "ELLOS"
           : "CPU";
       const ourShort = this.lastCustomLabels?.nosotros
-        ? this.lastCustomLabels.nosotros.slice(0, 5).toUpperCase()
+        ? this.lastCustomLabels.nosotros.slice(0, w < 125 ? 3 : 5).toUpperCase()
         : is2v2
           ? "NOS"
           : "TÚ";
@@ -831,6 +757,7 @@ export class StoneScoreboard extends Container {
       this.cpuScoreTxt.position.set(w / 2 + 10, 16);
 
       // Corona vectorial discreta en el equipo Mano
+      this.crownG.visible = w >= 125;
       const crownX = manoTeam === "nosotros" ? w / 2 - 12 : w - 12;
       drawIconDiamondCrown(this.crownG, 8.5, PALETTE.brass);
       this.crownG.position.set(crownX, 11);
@@ -841,195 +768,45 @@ export class StoneScoreboard extends Container {
       return;
     }
 
-    // Escritorio: marcador integrado con piedras físicas agrupadas en pares de 6
-    const w = 276;
-    const h = 46;
-    this.bg
-      .roundRect(0, 0, w, h, 10)
-      .fill({ color: PALETTE.surfaceRecessed, alpha: 0.92 })
-      .stroke({ width: 1, color: PALETTE.borderSubtle, alpha: 0.9 });
-
-    if (activeTeam === "nosotros") {
-      this.bg
-        .roundRect(2, 2, w - 4, h / 2 - 2, 7)
-        .fill({ color: PALETTE.accept, alpha: 0.16 });
-    } else if (activeTeam === "ellos") {
-      this.bg
-        .roundRect(2, h / 2, w - 4, h / 2 - 2, 7)
-        .fill({ color: PALETTE.crimson, alpha: 0.18 });
-    }
-
-    const ourLabel = this.lastCustomLabels?.nosotros
-      ? this.lastCustomLabels.nosotros.slice(0, 6).toUpperCase()
-      : is2v2
-        ? "NOS"
-        : "TÚ";
-    const oppLabel = this.lastCustomLabels?.ellos
-      ? this.lastCustomLabels.ellos.slice(0, 6).toUpperCase()
-      : is2v2
-        ? "ELLOS"
-        : "CPU";
-
-    this.playerLabel.text = ourLabel;
-    this.playerLabel.style.fontSize = 10;
-    this.playerLabel.style.fill =
-      activeTeam === "nosotros" ? PALETTE.acceptBorder : PALETTE.inkSecondary;
-    this.playerLabel.position.set(12, 6);
-
-    this.playerScoreTxt.text = `${scores.nosotros}`;
-    this.playerScoreTxt.style.fontSize = 14;
-    this.playerScoreTxt.style.fill = PALETTE.ivory;
-    this.playerScoreTxt.position.set(66, 3);
-
-    this.cpuLabel.text = oppLabel;
-    this.cpuLabel.style.fontSize = 10;
-    this.cpuLabel.style.fill =
-      activeTeam === "ellos" ? PALETTE.crimsonBorder : PALETTE.inkSecondary;
-    this.cpuLabel.position.set(12, 27);
-
-    this.cpuScoreTxt.text = `${scores.ellos}`;
-    this.cpuScoreTxt.style.fontSize = 14;
-    this.cpuScoreTxt.style.fill = PALETTE.ivory;
-    this.cpuScoreTxt.position.set(66, 24);
-
-    // Corona vectorial de Mano (bien separada de "ELLOS")
-    drawIconDiamondCrown(this.crownG, 8.5, PALETTE.brass);
-    this.crownG.position.set(55, manoTeam === "nosotros" ? 12 : 33);
-
-    this.metaTxt.text = `/${targetScore}`;
-    this.metaTxt.style.fontSize = 9;
-    this.metaTxt.position.set(90, 17);
-
-    // Piedras agrupadas (12 o 24 en 2 filas compactas de 12 con separación visual cada 6)
-    const drawStones = (count: number, baseY: number, fillColor: number) => {
-      const total = targetScore;
-      const perRow = 12;
-      const startX = 118;
-      const rows = total === 24 ? 2 : 1;
-      for (let i = 0; i < total; i++) {
-        const row = Math.floor(i / perRow);
-        const col = i % perRow;
-        const groupGap = col >= 6 ? 5 : 0;
-        const x = startX + col * 11.5 + groupGap;
-        const y = rows === 2 ? baseY + row * 7.5 : baseY + 3.5;
-        const filled = i < count;
-        this.dotsG.circle(x, y, filled ? 2.8 : 2.1).fill({
-          color: filled ? fillColor : 0xffffff,
-          alpha: filled ? 0.96 : 0.14,
-        });
+    this.crownG.visible = true;
+    const column = 105;
+    this.bg.moveTo(column, 5).lineTo(column, 41)
+      .moveTo(column * 2, 5).lineTo(column * 2, 41)
+      .stroke({ color: 0x70684c, width: 1 });
+    const teamLabels = [this.lastCustomLabels?.nosotros ?? (is2v2 ? "Nosotros" : "Tú"),
+      this.lastCustomLabels?.ellos ?? (is2v2 ? "Ellos" : "CPU")];
+    (["nosotros", "ellos"] as const).forEach((team, i) => {
+      const label = i === 0 ? this.playerLabel : this.cpuLabel;
+      const number = i === 0 ? this.playerScoreTxt : this.cpuScoreTxt;
+      const x = i * column + 9;
+      label.text = teamLabels[i].slice(0, 10).toUpperCase();
+      label.style.fontSize = 10;
+      label.style.fill = activeTeam === team ? PALETTE.brassLight : PALETTE.inkSecondary;
+      label.position.set(x, 0);
+      number.text = String(scores[team]);
+      number.style.fontSize = 26;
+      number.position.set(x, 12);
+      // Grupos completos de seis piedras, con las restantes a su derecha.
+      const count = scores[team];
+      const groups = Math.floor(count / 6);
+      for (let j = 0; j < groups; j++) {
+        this.dotsG.rect(x + 40 + j * 8, 24, 5, 5).fill(PALETTE.brass);
       }
-    };
-
-    drawStones(scores.nosotros, 8, PALETTE.brass);
-    drawStones(scores.ellos, 29, PALETTE.crimsonBorder);
+      for (let j = 0; j < count % 6; j++) {
+        this.dotsG.circle(x + 42 + j * 7, 34, 1.8).fill(PALETTE.brassLight);
+      }
+    });
+    drawIconDiamondCrown(this.crownG, 9, PALETTE.brass);
+    this.crownG.position.set(manoTeam === "nosotros" ? 92 : column + 92, 7);
+    this.metaTxt.text = `A ${targetScore}`;
+    this.metaTxt.style.fontSize = 13;
+    this.metaTxt.position.set(column * 2 + 12, 15);
   }
 }
 
 /**
  * Modal de Reglas del Truco Venezolano — estética editorial sobria.
  */
-export class RulesModal extends Container {
-  private backdrop: Graphics;
-  private card: Container;
-  private bg: Graphics;
-  private titleTxt: Text;
-  private bodyTxt: Text;
-  private closeBtn: PillButton;
-
-  constructor(onClose: () => void) {
-    super();
-    this.visible = false;
-
-    this.backdrop = new Graphics();
-    this.backdrop.eventMode = "static";
-    this.backdrop.on("pointertap", onClose);
-    this.addChild(this.backdrop);
-
-    this.card = new Container();
-    this.card.eventMode = "static";
-    this.addChild(this.card);
-
-    this.bg = new Graphics();
-    this.card.addChild(this.bg);
-
-    this.titleTxt = new Text({
-      text: "Reglas del Truco Venezolano",
-      style: {
-        fontFamily: FONT_DISPLAY,
-        fontSize: 20,
-        fontWeight: "700",
-        fill: PALETTE.brassLight,
-      },
-    });
-    this.titleTxt.anchor.set(0.5, 0);
-    this.card.addChild(this.titleTxt);
-
-    const bodyText = [
-      "• LA VIRA Y PIEZAS: La carta bajo el mazo define el palo de triunfo. El 11 de ese palo es el PERICO (carta suprema) y el 10 es la PERICA. Si la Vira es 11 o 10, el Rey (12) toma su lugar.",
-      "",
-      "• JERARQUÍA DEL TRUCO: Perico > Perica > 1 Espadas (Espadilla) > 1 Bastos (Bastillo) > 7 Espadas > 7 Oros > 3 > 2 > 1 Copas/Oros > 12 > 11 > 10 > 7 Copas/Bastos > 6 > 5 > 4.",
-      "",
-      "• ESCALADA DEL TRUCO: Sin truco (1) · Truco (3) · Retruco (6) · Vale Nueve (9) · Vale Juego. No querer paga el nivel anterior.",
-      "",
-      "• ENVIDO (solo 1.ª baza, antes de aceptar Truco): 2 cartas del mismo palo suman 20 + sus valores (figuras valen 0). Perico = 30 y Perica = 29 como comodines. Se resuelve y presenta al final de la mano.",
-      "",
-      "• FLOR (anula Envido): 3 del mismo palo o 2 + Perico/Perica (3 piedras; Contraflor = 6). FLOR RESERVADA (Perico + Perica) = 5 piedras: nunca se canta «Flor Reservada» (se guarda callada hasta el final o se responde «¡Flor!» / «¡Contraflor!»).",
-      "",
-      "• CANTOS DE «A LEY» (quien no es Pie, 1.ª baza): Permite guardar Flor hasta antes de tu 2.ª carta o engañar sin tenerla.",
-      "",
-      "• BAZA PARDA: Empate da ventaja a quien ganó la 1.ª baza. Si la 1.ª es parda, decide la 2.ª. Triple parda gana la Mano.",
-    ].join("\n");
-
-    this.bodyTxt = new Text({
-      text: bodyText,
-      style: {
-        fontFamily: FONT_UI,
-        fontSize: 12,
-        lineHeight: 17.5,
-        fill: PALETTE.inkLight,
-        wordWrap: true,
-        wordWrapWidth: 520,
-      },
-    });
-    this.card.addChild(this.bodyTxt);
-
-    this.closeBtn = new PillButton({
-      label: "Entendido",
-      width: 154,
-      height: 44,
-      theme: "primary",
-      onClick: onClose,
-    });
-    this.card.addChild(this.closeBtn);
-  }
-
-  public layout(width: number, height: number): void {
-    this.backdrop.clear();
-    this.backdrop.rect(0, 0, width, height).fill({ color: 0x040d09, alpha: 0.78 });
-
-    const isNarrow = width < 620;
-    const cardW = isNarrow ? Math.min(366, width - 24) : 574;
-    this.titleTxt.style.fontSize = isNarrow ? 17 : 21;
-    this.bodyTxt.style.fontSize = isNarrow ? 11.5 : 12.2;
-    this.bodyTxt.style.lineHeight = isNarrow ? 16.5 : 18;
-    this.bodyTxt.style.wordWrapWidth = cardW - 40;
-
-    const cardH = Math.min(height - 32, Math.max(400, this.bodyTxt.height + 132));
-
-    this.bg.clear();
-    this.bg
-      .roundRect(-cardW / 2, -cardH / 2, cardW, cardH, 16)
-      .fill(PALETTE.surfaceCard)
-      .stroke({ width: 1.5, color: PALETTE.brass, alpha: 0.8 });
-
-    this.titleTxt.position.set(0, -cardH / 2 + 20);
-    this.bodyTxt.position.set(-cardW / 2 + 20, -cardH / 2 + 54);
-    this.closeBtn.position.set(0, cardH / 2 - 36);
-
-    this.card.position.set(width / 2, height / 2);
-  }
-}
-
 const WHISPER_TONE_ACCENT: Record<PartnerAdviceTone, number> = {
   strong: PALETTE.acceptBorder,
   flor: PALETTE.brass,
@@ -1400,13 +1177,13 @@ export class PartnerCommDrawer extends Container {
     const spread = (cardW - 32) / 3;
     const btnScale = isNarrow ? Math.min(1, (spread - 6) / 108) : 1;
     this.askBtns.forEach((btn, idx) => {
-      btn.scale.set(btnScale);
+      btn.scale.set(btnScale, 1);
       btn.position.set((idx - 1) * spread, 30);
     });
 
     this.tellLabel.position.set(0, 74);
     this.tellBtns.forEach((btn, idx) => {
-      btn.scale.set(btnScale);
+      btn.scale.set(btnScale, 1);
       btn.position.set((idx - 1) * spread, 106);
     });
 

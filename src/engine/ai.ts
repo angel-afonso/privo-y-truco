@@ -94,7 +94,7 @@ export function decideBotAction(
     );
     const chain = state.envido.chain;
     const isFalta = chain[chain.length - 1] === "falta_envido";
-    const isReal = chain[chain.length - 1] === "real_envido";
+    const raised = chain[0] !== "envido" || chain.length > 1;
 
     if (pts >= 34 && legal.envidoCalls.includes("falta_envido") && rng() < 0.65) {
       return { type: "CALL_ENVIDO", call: "falta_envido" };
@@ -102,11 +102,11 @@ export function decideBotAction(
     if (pts >= 31 && legal.envidoCalls.includes("envido") && rng() < 0.6) {
       return { type: "CALL_ENVIDO", call: "envido" };
     }
-    if (pts >= 32 && legal.envidoCalls.includes("real_envido") && rng() < 0.45) {
-      return { type: "CALL_ENVIDO", call: "real_envido" };
+    if (pts >= 32 && legal.envidoCalls.includes("envido_cinco") && rng() < 0.45) {
+      return { type: "CALL_ENVIDO", call: "envido_cinco" };
     }
 
-    const threshold = isFalta ? 31 : isReal ? 29 : chain.length >= 2 ? 29 : 26;
+    const threshold = isFalta ? 31 : raised ? 29 : 26;
     const manoBonus = getPlayerTeam(state.mano) === myTeam ? -1 : 0;
     const accept = pts >= threshold + manoBonus || (pts >= 24 && !isFalta && rng() < 0.18);
     return { type: "RESPOND_ENVIDO", accept };
@@ -154,7 +154,7 @@ export function decideBotAction(
       const envPts = calculateEnvidoPoints(fullHand, vira);
       const hintClaim = actor === "partner" ? partnerHint?.playerEnvidoClaim : undefined;
       if (envPts >= 34 && rng() < 0.45) {
-        return { type: "CALL_ENVIDO", call: "real_envido" };
+        return { type: "CALL_ENVIDO", call: "envido_cinco" };
       }
       if (hintClaim === "high") {
         return { type: "CALL_ENVIDO", call: "envido" };

@@ -28,7 +28,20 @@ import {
   saveHostMatchSnapshot,
 } from "./sessionStore";
 
+import { RealtimeInvites, redeemRealtimeInvite } from "./realtimeInvites";
+
+import { CHAT_LIMIT, chatText, type ChatMessage, type ChatSnapshot } from "./chat";
+
 export type BackendMode = "server" | "realtime";
+
+export type RoomVisibility = "private" | "public";
+
+export interface PublicRoom {
+  code: string;
+  host: string;
+  config: GameConfig;
+  occupied: number;
+}
 
 export interface RoomMember {
   clientId: string;
@@ -37,6 +50,7 @@ export interface RoomMember {
   isHost: boolean;
   joinedAt: number;
   online?: boolean;
+  hostInvites?: boolean;
 }
 
 /**
@@ -69,6 +83,7 @@ export interface RoomClientCallbacks {
   onSafeViewSync: (payload: SafeViewerSyncPayload) => void;
   onRemoteAction: (seat: PlayerId, action: PlayerAction) => boolean;
   onActionRejected: (actionId: string) => void;
+  onChatChange: (room: string, messages: ChatMessage[], initial: boolean) => void;
   onTeamWhisper: (payload: TeamWhisperPayload) => void;
   onRequestSync: (targetClientId?: string) => void;
   onHostRecovered?: (snapshot: PersistedHostSnapshot) => void;
@@ -76,8 +91,13 @@ export interface RoomClientCallbacks {
 
 interface ServerResponse {
   ok: boolean;
+  rooms?: PublicRoom[];
+  chat?: ChatSnapshot;
+  visibility?: RoomVisibility;
   error?: string;
+  httpStatus?: number;
   roomCode?: string;
+  inviteCode?: string;
   status?: "lobby" | "playing" | "finished";
   config?: GameConfig;
   version?: number;
@@ -121,6 +141,15 @@ export class TrucoRoomClient {
 
   public backendMode: BackendMode = "realtime";
   public roomCode: string | null = null;
+  private serverInvite: string | null = null;
+  private realtimeInvites: RealtimeInvites | null = null;
+
+  public get inviteCode(): string | null {
+    if (!this.isHost || this.inMatch) return null;
+    return this.backendMode === "server" ? this.serverInvite : this.realtimeInvites?.code ?? null;
+  }
+
+  public visibility: RoomVisibility = "private";
   public isHost = false;
   public mySeat: PlayerId | null = null;
   public myName = "Jugador";
@@ -130,6 +159,8 @@ export class TrucoRoomClient {
 
   private channel: RealtimeChannel | null = null;
   private callbacks: RoomClientCallbacks;
+  private chatRevision = -1;
+  private chatMessages: ChatMessage[] = [];
   private joinedAt = Date.now();
   private inMatch = false;
   private serverAvailableCache: boolean | null = null;
@@ -141,6 +172,7 @@ export class TrucoRoomClient {
     this.clientId = id.clientId;
     this.playerSecret = id.playerSecret;
     this.callbacks = callbacks;
+    if (supabase) this.realtimeInvites = new RealtimeInvites(supabase, () => callbacks.onMembersChange(this.members));
   }
 
   public isConnected(): boolean {
@@ -168,12 +200,19 @@ export class TrucoRoomClient {
     if (!supabase) return null;
     try {
       const { data, error } = await supabase.functions.invoke<ServerResponse>("truco-game", {
-        body: {
+        timeout: ["list_public_rooms", "send_chat", "get_chat"].includes(String(body.op)) ? 7000 : undefined,
+        body: body.op === "list_public_rooms" ? body : {
           clientId: this.clientId,
           playerSecret: this.playerSecret,
           ...body,
         },
       });
+      if (error?.context instanceof Response) {
+        const result = await error.context.json();
+        if (result.ok === false && typeof result.error === "string") {
+          return { ok: false, error: result.error, httpStatus: error.context.status };
+        }
+      }
       if (error || !data) return null;
       return data;
     } catch {
@@ -188,7 +227,14 @@ export class TrucoRoomClient {
     return this.serverAvailableCache;
   }
 
-  public async createRoom(playerName: string, config: GameConfig): Promise<string> {
+  public async listPublicRooms(): Promise<PublicRoom[]> {
+    const res = await this.invokeServer({ op: "list_public_rooms" });
+    if (!res?.ok || !Array.isArray(res.rooms)) throw new Error("No se pudieron cargar las salas abiertas.");
+    this.serverAvailableCache = true;
+    return res.rooms;
+  }
+
+  public async createRoom(playerName: string, config: GameConfig, visibility: RoomVisibility = "private"): Promise<string> {
     if (!isSupabaseConfigured || !supabase) {
       this.callbacks.onStatusChange("error", "Supabase no está configurado en .env");
       throw new Error("Supabase no configurado.");
@@ -200,9 +246,9 @@ export class TrucoRoomClient {
     this.callbacks.onStatusChange("connecting", "Creando sala...");
 
     const useServer = await this.probeServerBackend();
-    if (useServer) {
+    if (useServer || visibility === "public") {
       const res = await this.invokeServer({
-        op: "create_room",
+        op: visibility === "public" ? "create_public_room" : "create_room",
         name: this.myName,
         config: this.config,
       });
@@ -211,6 +257,8 @@ export class TrucoRoomClient {
         await this.attachToServerRoom(res);
         return res.roomCode;
       }
+      throw new Error(visibility === "public" ? "No se pudo abrir la mesa pública. Intenta de nuevo." :
+        res?.error ?? "No se pudo crear la sala.");
     }
 
     this.backendMode = "realtime";
@@ -220,7 +268,7 @@ export class TrucoRoomClient {
     return code;
   }
 
-  public async joinRoom(roomCode: string, playerName: string): Promise<string> {
+  public async joinRoom(roomCode: string, playerName: string, publicEntry = false): Promise<string> {
     const clean = normalizeRoomCode(roomCode);
     if (clean.length < 4) {
       throw new Error("Ingresa un código de sala válido (mínimo 4 caracteres).");
@@ -235,9 +283,9 @@ export class TrucoRoomClient {
     this.callbacks.onStatusChange("connecting", `Conectando a sala ${clean}...`);
 
     const useServer = await this.probeServerBackend();
-    if (useServer) {
+    if (useServer || publicEntry) {
       const res = await this.invokeServer({
-        op: "join_room",
+        op: publicEntry ? "join_public_room" : "join_room",
         roomCode: clean,
         name: this.myName,
       });
@@ -246,16 +294,45 @@ export class TrucoRoomClient {
         await this.attachToServerRoom(res);
         return res.roomCode;
       }
-      if (res && !res.ok && res.error) {
-        this.callbacks.onStatusChange("error", res.error);
-        throw new Error(res.error);
+      if (publicEntry || res?.httpStatus !== 404) {
+        throw new Error(res?.error ?? "No se pudo conectar a la sala.");
       }
     }
 
+    let realtimeRoom = clean;
+    if (/^R[0-9A-F]{7}$/.test(clean)) {
+      const approved = await redeemRealtimeInvite(supabase, clean);
+      if (!approved) throw new Error("Invitación usada o vencida. Pide otra al anfitrión.");
+      realtimeRoom = approved;
+    } else if (clean.length !== 6 || !await this.hasRealtimeHost(clean)) {
+      throw new Error("No hay una invitación activa con ese código.");
+    }
     this.backendMode = "realtime";
-    await this.connectRealtimeChannel(clean, false, null, false);
+    await this.connectRealtimeChannel(realtimeRoom, false, null, false);
     this.persistSession(false);
-    return clean;
+    return realtimeRoom;
+  }
+
+  private async hasRealtimeHost(code: string): Promise<boolean> {
+    if (!supabase) return false;
+    const probe = supabase.channel(`truco-room:${code}`);
+    try {
+      return await new Promise<boolean>(resolve => {
+        const timer = setTimeout(() => resolve(false), 5000);
+        probe.on("presence", { event: "sync" }, () => {
+          clearTimeout(timer);
+          resolve(Object.values(probe.presenceState<RoomMember>()).some(entries =>
+            entries.some(member => member.isHost && !member.hostInvites)));
+        }).subscribe(status => {
+          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+            clearTimeout(timer);
+            resolve(false);
+          }
+        });
+      });
+    } finally {
+      await supabase.removeChannel(probe);
+    }
   }
 
   /**
@@ -270,7 +347,7 @@ export class TrucoRoomClient {
     this.callbacks.onStatusChange("reconnecting", `Reconectando a sala ${saved.roomCode}...`);
 
     try {
-      const useServer = await this.probeServerBackend();
+      const useServer = saved.backend ? saved.backend === "server" : await this.probeServerBackend();
       if (useServer) {
         const res = await this.invokeServer({
           op: "reconnect",
@@ -281,6 +358,10 @@ export class TrucoRoomClient {
           this.backendMode = "server";
           await this.attachToServerRoom(res);
           return true;
+        }
+        if (saved.backend === "server") {
+          this.callbacks.onStatusChange("error", res?.error ?? "No se pudo reconectar a la sala.");
+          return false;
         }
       }
 
@@ -306,6 +387,8 @@ export class TrucoRoomClient {
 
   private async attachToServerRoom(res: ServerResponse): Promise<void> {
     this.roomCode = res.roomCode ?? null;
+    this.visibility = res.visibility ?? "private";
+    this.serverInvite = res.isHost ? res.inviteCode ?? null : null;
     this.isHost = Boolean(res.isHost);
     this.mySeat = res.mySeat ?? null;
     if (res.config) this.config = { ...res.config };
@@ -318,6 +401,7 @@ export class TrucoRoomClient {
     }
     this.applyServerResponse(res);
     this.persistSession(this.inMatch);
+    if (!this.inMatch) void this.sendBroadcast("server_ping", {});
 
     // Heartbeat discreto para mantener `last_seen` vivo y detectar cambios perdidos
     this.clearServerPoll();
@@ -330,6 +414,7 @@ export class TrucoRoomClient {
 
   private applyServerResponse(res: ServerResponse): void {
     if (res.roomCode !== this.roomCode || (res.version !== undefined && res.version < this.stateVersion)) return;
+    this.serverInvite = res.isHost ? res.inviteCode ?? null : null;
     if (res.config) {
       this.config = { ...res.config };
       this.callbacks.onConfigChange(this.config);
@@ -417,6 +502,19 @@ export class TrucoRoomClient {
       this.syncPresenceState();
     });
 
+    channel.on("broadcast", { event: "chat_changed" }, () => {
+      if (channel === this.channel && this.backendMode === "server") void this.refreshChat();
+    });
+    channel.on("broadcast", { event: "chat_message" }, ({ payload }) => {
+      if (channel !== this.channel || this.backendMode !== "realtime") return;
+      const text = chatText(payload?.text);
+      if (!text || typeof payload.id !== "string" || payload.id.length > 64) return;
+      const sender = this.members.find(member => member.clientId === payload.clientId);
+      if (sender && sender.clientId !== this.clientId) {
+        this.appendChat({ id: payload.id, clientId: sender.clientId, name: sender.name, text });
+      }
+    });
+
     // Ping ligero en modo `server`: cero cartas en el WebSocket, cada cliente pide su vista sanitizada
     channel.on("broadcast", { event: "server_ping" }, () => {
       if (this.backendMode === "server") {
@@ -492,8 +590,13 @@ export class TrucoRoomClient {
         if (status === "SUBSCRIBED") {
           clearTimeout(timer);
           await this.trackSelf();
+          if (channel !== this.channel) return;
+          if (this.backendMode === "server") void this.refreshChat();
           if (this.backendMode === "realtime") {
             if (this.isHost) {
+              if (!this.inMatch) this.realtimeInvites?.open(roomCode, () =>
+                this.channel === channel && this.isHost && !this.inMatch &&
+                this.members.filter(member => member.seat).length < getSeatsForMode(this.config.mode).length);
               await this.broadcastConfig(this.config);
             } else {
               await this.sendBroadcast("request_sync", { clientId: this.clientId });
@@ -530,6 +633,7 @@ export class TrucoRoomClient {
       isHost: this.isHost,
       joinedAt: this.joinedAt,
       online: true,
+      hostInvites: true,
     } satisfies RoomMember);
   }
 
@@ -584,8 +688,10 @@ export class TrucoRoomClient {
 
   private persistSession(inMatch: boolean): void {
     this.inMatch = inMatch;
+    if (inMatch) this.realtimeInvites?.close();
     if (!this.roomCode) return;
     saveActiveRoomSession({
+      backend: this.backendMode,
       roomCode: this.roomCode,
       name: this.myName,
       seat: this.mySeat,
@@ -773,6 +879,48 @@ export class TrucoRoomClient {
     return this.sendBroadcast("player_action", { clientId: this.clientId, seat: this.mySeat, action, actionId, expectedVersion });
   }
 
+  private applyChat(snapshot: ChatSnapshot): void {
+    if (!this.roomCode || snapshot.revision <= this.chatRevision) return;
+    const initial = this.chatRevision < 0;
+    this.chatRevision = snapshot.revision;
+    this.chatMessages = snapshot.messages;
+    this.callbacks.onChatChange(this.roomCode, this.chatMessages, initial);
+  }
+
+  private appendChat(message: ChatMessage): void {
+    if (!this.roomCode || this.chatMessages.some(m => m.id === message.id && m.clientId === message.clientId)) return;
+    this.chatMessages = [...this.chatMessages.slice(1 - CHAT_LIMIT), message];
+    this.callbacks.onChatChange(this.roomCode, this.chatMessages, false);
+  }
+
+  public async refreshChat(): Promise<boolean> {
+    if (this.backendMode !== "server") return true;
+    const channel = this.channel;
+    if (!channel || !this.roomCode) return false;
+    const res = await this.invokeServer({ op: "get_chat", roomCode: this.roomCode });
+    if (channel !== this.channel || !res?.ok || !res.chat) return false;
+    this.applyChat(res.chat);
+    return true;
+  }
+
+  public async sendChat(id: string, value: string): Promise<boolean> {
+    const text = chatText(value);
+    const channel = this.channel;
+    if (!text || !this.roomCode || !channel) return false;
+    if (this.backendMode === "server") {
+      const res = await this.invokeServer({ op: "send_chat", roomCode: this.roomCode, id, text });
+      if (channel !== this.channel || !res?.ok || !res.chat) return false;
+      this.applyChat(res.chat);
+      void this.sendBroadcast("chat_changed", {});
+    } else {
+      if (channel.state !== "joined") return false;
+      const sent = await this.sendBroadcast("chat_message", { id, clientId: this.clientId, text });
+      if (!sent || channel !== this.channel) return false;
+      this.appendChat({ id, clientId: this.clientId, name: this.myName, text });
+    }
+    return true;
+  }
+
   public async sendTeamWhisper(message: PartnerMessage): Promise<void> {
     if (!this.mySeat) return;
     const payload: TeamWhisperPayload = {
@@ -802,27 +950,33 @@ export class TrucoRoomClient {
 
   public async leaveRoom(clearSaved = true): Promise<void> {
     this.clearServerPoll();
+    this.realtimeInvites?.close();
+    this.serverInvite = null;
     const prevCode = this.roomCode;
-    if (this.backendMode === "server" && prevCode && clearSaved) {
-      void this.invokeServer({ op: "leave_room", roomCode: prevCode });
-    }
+    const departure = this.backendMode === "server" && prevCode && clearSaved
+      ? this.invokeServer({ op: "leave_room", roomCode: prevCode }) : null;
     const channel = this.channel;
     this.channel = null;
+    this.chatMessages = [];
+    this.chatRevision = -1;
     this.roomCode = null;
+    this.visibility = "private";
     if (channel && supabase) {
       try {
+        if (departure && (await departure)?.ok) {
+          await channel.send({ type: "broadcast", event: "server_ping", payload: {} });
+        }
         await channel.untrack();
         await supabase.removeChannel(channel);
       } catch {
         // Ignorar errores de cierre en desconexión
       }
     }
+    await departure;
     if (clearSaved) {
       clearActiveRoomSession();
       if (prevCode) clearHostMatchSnapshot(prevCode);
     }
-    this.channel = null;
-    this.roomCode = null;
     this.isHost = false;
     this.mySeat = null;
     this.members = [];
