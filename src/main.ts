@@ -25,6 +25,7 @@ async function waitForFonts(timeoutMs = 550): Promise<void> {
     autoDensity: true,
     resolution: Math.min(window.devicePixelRatio || 1, 2),
   });
+  app.ticker.maxFPS = 60;
 
   root.appendChild(app.canvas);
   new TrucoGameApp(app);

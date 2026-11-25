@@ -14,10 +14,40 @@ export function createDeck(): Card[] {
   return deck;
 }
 
-export function shuffleDeck(deck: Card[], rng: () => number = Math.random): Card[] {
+const UINT32_RANGE = 0x1_0000_0000;
+const cryptoBuf = new Uint32Array(1);
+
+/**
+ * Genera un entero uniforme en [0, maxExclusive) usando CSPRNG (crypto.getRandomValues)
+ * con muestreo por rechazo para eliminar por completo el sesgo de módulo.
+ */
+function cryptoRandomInt(maxExclusive: number): number {
+  const limit = Math.floor(UINT32_RANGE / maxExclusive) * maxExclusive;
+  let value: number;
+  do {
+    globalThis.crypto.getRandomValues(cryptoBuf);
+    value = cryptoBuf[0];
+  } while (value >= limit);
+  return value % maxExclusive;
+}
+
+function randomInt(maxExclusive: number, rng?: () => number): number {
+  if (!rng && typeof globalThis.crypto?.getRandomValues === "function") {
+    return cryptoRandomInt(maxExclusive);
+  }
+  const r = (rng ?? Math.random)();
+  return Math.min(maxExclusive - 1, Math.max(0, Math.floor(r * maxExclusive)));
+}
+
+/**
+ * Baraja Fisher-Yates (Durstenfeld) insesgada.
+ * Por defecto usa CSPRNG del sistema (entropía suficiente para cubrir las 40! ≈ 2^159 permutaciones).
+ * Acepta un `rng` determinístico opcional para pruebas reproducibles.
+ */
+export function shuffleDeck(deck: Card[], rng?: () => number): Card[] {
   const copy = [...deck];
   for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
+    const j = randomInt(i + 1, rng);
     const tmp = copy[i];
     copy[i] = copy[j];
     copy[j] = tmp;
@@ -32,7 +62,7 @@ export interface DealResult {
 
 export function dealHandForSeats(
   seats: PlayerId[],
-  rng: () => number = Math.random,
+  rng?: () => number,
 ): DealResult {
   const deck = shuffleDeck(createDeck(), rng);
   const hands: Partial<Record<PlayerId, Card[]>> = {};

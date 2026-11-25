@@ -1,4 +1,4 @@
-import { Container, Graphics, Rectangle, Text } from "pixi.js";
+import { Container, Graphics, GraphicsContext, Rectangle, Text } from "pixi.js";
 import { isPerica, isPerico } from "../engine/evaluator";
 import { Card, Rank, Suit } from "../engine/types";
 import { drawIconDiamondCrown } from "./icons";
@@ -307,14 +307,22 @@ function drawCourtArtwork(g: Graphics, rank: 10 | 11 | 12, suit: Suit): void {
   }
 }
 
-export function createCardBackGraphics(): Graphics {
-  const g = new Graphics();
+let sharedCardBackContext: GraphicsContext | null = null;
+let sharedCardBackFlatContext: GraphicsContext | null = null;
+let sharedCardShadowContext: GraphicsContext | null = null;
+let sharedCardEdgeContext: GraphicsContext | null = null;
+let sharedDeckShadowContext: GraphicsContext | null = null;
+let sharedDeckSliceContexts: GraphicsContext[] | null = null;
+let sharedLeaderGlowContext: GraphicsContext | null = null;
+let sharedHoverGlowContext: GraphicsContext | null = null;
 
-  // Sombra de contacto realista
-  g.roundRect(-HALF_W + 2.5, -HALF_H + 4, CARD_WIDTH, CARD_HEIGHT, 10).fill({
-    color: 0x000000,
-    alpha: 0.36,
-  });
+function drawCardBackArt(g: GraphicsContext, withShadow: boolean): GraphicsContext {
+  if (withShadow) {
+    g.roundRect(-HALF_W + 2.5, -HALF_H + 4, CARD_WIDTH, CARD_HEIGHT, 10).fill({
+      color: 0x000000,
+      alpha: 0.36,
+    });
+  }
 
   // Base marfil envejecido
   g.roundRect(-HALF_W, -HALF_H, CARD_WIDTH, CARD_HEIGHT, 10)
@@ -356,14 +364,181 @@ export function createCardBackGraphics(): Graphics {
   return g;
 }
 
+function getCardBackContext(withShadow = true): GraphicsContext {
+  if (withShadow) {
+    if (!sharedCardBackContext) {
+      sharedCardBackContext = drawCardBackArt(new GraphicsContext(), true);
+    }
+    return sharedCardBackContext;
+  }
+  if (!sharedCardBackFlatContext) {
+    sharedCardBackFlatContext = drawCardBackArt(new GraphicsContext(), false);
+  }
+  return sharedCardBackFlatContext;
+}
+
+function getCardShadowContext(): GraphicsContext {
+  if (!sharedCardShadowContext) {
+    sharedCardShadowContext = new GraphicsContext()
+      .roundRect(-HALF_W, -HALF_H, CARD_WIDTH, CARD_HEIGHT, 10)
+      .fill({ color: 0x020b07, alpha: 1 });
+  }
+  return sharedCardShadowContext;
+}
+
+function getCardEdgeContext(): GraphicsContext {
+  if (!sharedCardEdgeContext) {
+    sharedCardEdgeContext = new GraphicsContext()
+      .roundRect(-HALF_W - 2, -HALF_H + 1, CARD_WIDTH + 4, CARD_HEIGHT - 2, 10)
+      .fill(0xeadfc6);
+  }
+  return sharedCardEdgeContext;
+}
+
+function getDeckShadowContext(): GraphicsContext {
+  if (!sharedDeckShadowContext) {
+    sharedDeckShadowContext = new GraphicsContext()
+      .roundRect(-HALF_W - 2, -HALF_H - 1, CARD_WIDTH + 6, CARD_HEIGHT + 5, 12)
+      .fill({ color: 0x020a06, alpha: 0.44 })
+      .roundRect(-HALF_W + 3, -HALF_H + 4, CARD_WIDTH + 6, CARD_HEIGHT + 5, 13)
+      .fill({ color: 0x020a06, alpha: 0.22 });
+  }
+  return sharedDeckShadowContext;
+}
+
+function getDeckSliceContexts(): GraphicsContext[] {
+  if (sharedDeckSliceContexts) return sharedDeckSliceContexts;
+  // Tres tonos sutiles de canto de cartulina de algodón para dar textura real al lomo de la baraja
+  const tones = [
+    { fill: 0xeae0ca, stroke: 0x9c8867 },
+    { fill: 0xded1b4, stroke: 0x8f7b5b },
+    { fill: 0xd3c4a4, stroke: 0x847152 },
+  ];
+  sharedDeckSliceContexts = tones.map(({ fill, stroke }) =>
+    new GraphicsContext()
+      .roundRect(-HALF_W, -HALF_H, CARD_WIDTH, CARD_HEIGHT, 10)
+      .fill(fill)
+      .stroke({ width: 1.05, color: stroke, alpha: 0.85 }),
+  );
+  return sharedDeckSliceContexts;
+}
+
+function getLeaderGlowContext(): GraphicsContext {
+  if (!sharedLeaderGlowContext) {
+    sharedLeaderGlowContext = new GraphicsContext()
+      .roundRect(-HALF_W - 4, -HALF_H - 4, CARD_WIDTH + 8, CARD_HEIGHT + 8, 13)
+      .fill({ color: PALETTE.brass, alpha: 0.22 })
+      .stroke({ width: 2.2, color: PALETTE.brassLight, alpha: 0.92 });
+  }
+  return sharedLeaderGlowContext;
+}
+
+function getHoverGlowContext(): GraphicsContext {
+  if (!sharedHoverGlowContext) {
+    sharedHoverGlowContext = new GraphicsContext()
+      .roundRect(-HALF_W - 4, -HALF_H - 4, CARD_WIDTH + 8, CARD_HEIGHT + 8, 13)
+      .fill({ color: PALETTE.brassLight, alpha: 0.3 });
+  }
+  return sharedHoverGlowContext;
+}
+
+export function createCardBackGraphics(withShadow = true): Graphics {
+  return new Graphics(getCardBackContext(withShadow));
+}
+
+const MAX_DECK_CARDS = 40;
+const DECK_SLICE_LAYERS = 20;
+const DECK_STEP_Y = 0.52;
+const DECK_STEP_X = -0.14;
+
+/**
+ * Representación física de una baraja española completa (hasta 40 cartas).
+ * Muestra el grosor real de los cantos de cartulina, micro-irregularidades de apilado
+ * y se reduce visualmente conforme se reparten cartas desde arriba.
+ */
+export class DeckStackView extends Container {
+  private shadow: Graphics;
+  private slices: Graphics[] = [];
+  private topCard: Graphics;
+  private cardCount = 0;
+
+  constructor(initialCards = MAX_DECK_CARDS) {
+    super();
+
+    this.shadow = new Graphics(getDeckShadowContext());
+    this.addChild(this.shadow);
+
+    const sliceContexts = getDeckSliceContexts();
+    for (let i = 0; i < DECK_SLICE_LAYERS; i++) {
+      const slice = new Graphics(sliceContexts[i % sliceContexts.length]);
+      // Micro-desalineación determinística para sentir un mazo real recién cuadradito a mano
+      const jitterX = Math.sin(i * 2.35) * 0.42;
+      const jitterRot = Math.cos(i * 1.73) * 0.0045;
+      slice.position.set(i * DECK_STEP_X * 2 + jitterX, -i * DECK_STEP_Y * 2);
+      slice.rotation = jitterRot;
+      this.slices.push(slice);
+      this.addChild(slice);
+    }
+
+    this.topCard = createCardBackGraphics(false);
+    this.addChild(this.topCard);
+
+    this.setCardCount(initialCards);
+  }
+
+  public getCardCount(): number {
+    return this.cardCount;
+  }
+
+  public getTopOffset(): { x: number; y: number } {
+    const c = Math.max(0, this.cardCount);
+    return {
+      x: c * DECK_STEP_X,
+      y: -c * DECK_STEP_Y,
+    };
+  }
+
+  public setCardCount(count: number): void {
+    const clamped = Math.max(0, Math.min(MAX_DECK_CARDS, Math.round(count)));
+    this.cardCount = clamped;
+
+    const hasCards = clamped > 0;
+    this.shadow.visible = hasCards;
+    this.topCard.visible = hasCards;
+
+    if (!hasCards) {
+      for (const s of this.slices) s.visible = false;
+      return;
+    }
+
+    // Número de capas visibles proporcional al grosor real del mazo (1 capa cada 2 cartas)
+    const visibleSlices = Math.min(DECK_SLICE_LAYERS, Math.max(1, Math.ceil((clamped - 1) / 2)));
+    for (let i = 0; i < this.slices.length; i++) {
+      this.slices[i].visible = i < visibleSlices;
+    }
+
+    const top = this.getTopOffset();
+    this.topCard.position.set(top.x, top.y);
+
+    // Sombra proyectada crece con la altura real del mazo
+    const heightRatio = clamped / MAX_DECK_CARDS;
+    this.shadow.position.set(3 + heightRatio * 5.5, 4 + heightRatio * 6.5);
+    this.shadow.alpha = 0.55 + heightRatio * 0.35;
+  }
+}
+
 export class CardView extends Container {
   public readonly card: Card;
   public readonly pieceType: "perico" | "perica" | null;
+  private shadowLayer: Graphics;
+  private flipPivot: Container;
+  private edgeFlash: Graphics;
   private frontLayer: Container;
   private backLayer: Graphics;
   private hoverGlow: Graphics;
   private leaderGlow: Graphics;
   private _faceUp: boolean;
+  private _elevation = 0;
 
   constructor(card: Card, vira?: Card, faceUp = true) {
     super();
@@ -377,26 +552,33 @@ export class CardView extends Container {
           : null
       : null;
 
-    this.leaderGlow = new Graphics()
-      .roundRect(-HALF_W - 4, -HALF_H - 4, CARD_WIDTH + 8, CARD_HEIGHT + 8, 13)
-      .fill({ color: PALETTE.brass, alpha: 0.22 })
-      .stroke({ width: 2.2, color: PALETTE.brassLight, alpha: 0.92 });
-    this.leaderGlow.visible = false;
-    this.addChild(this.leaderGlow);
+    this.shadowLayer = new Graphics(getCardShadowContext());
+    this.addChild(this.shadowLayer);
 
-    this.hoverGlow = new Graphics()
-      .roundRect(-HALF_W - 4, -HALF_H - 4, CARD_WIDTH + 8, CARD_HEIGHT + 8, 13)
-      .fill({ color: PALETTE.brassLight, alpha: 0.3 });
+    this.flipPivot = new Container();
+    this.addChild(this.flipPivot);
+
+    this.leaderGlow = new Graphics(getLeaderGlowContext());
+    this.leaderGlow.visible = false;
+    this.flipPivot.addChild(this.leaderGlow);
+
+    this.hoverGlow = new Graphics(getHoverGlowContext());
     this.hoverGlow.visible = false;
-    this.addChild(this.hoverGlow);
+    this.flipPivot.addChild(this.hoverGlow);
+
+    this.edgeFlash = new Graphics(getCardEdgeContext());
+    this.edgeFlash.visible = false;
+    this.flipPivot.addChild(this.edgeFlash);
 
     this.frontLayer = this.buildFront();
-    this.backLayer = createCardBackGraphics();
+    this.frontLayer.cacheAsTexture({ resolution: 2, antialias: true });
+    this.backLayer = createCardBackGraphics(false);
 
-    this.addChild(this.frontLayer);
-    this.addChild(this.backLayer);
+    this.flipPivot.addChild(this.frontLayer);
+    this.flipPivot.addChild(this.backLayer);
 
     this.hitArea = new Rectangle(-HALF_W, -HALF_H, CARD_WIDTH, CARD_HEIGHT);
+    this.setElevation(0);
     this.setFaceUp(faceUp);
   }
 
@@ -404,10 +586,55 @@ export class CardView extends Container {
     return this._faceUp;
   }
 
+  public get elevation(): number {
+    return this._elevation;
+  }
+
   public setFaceUp(value: boolean): void {
     this._faceUp = value;
     this.frontLayer.visible = value;
     this.backLayer.visible = !value;
+  }
+
+  /**
+   * Ajusta la altura visual de la carta sobre el fieltro (0 = apoyada, 1 = elevada en mano o vuelo).
+   */
+  public setElevation(z: number): void {
+    const clamped = Math.max(0, Math.min(1.5, z));
+    this._elevation = clamped;
+    this.shadowLayer.position.set(2 + clamped * 6, 3.8 + clamped * 11.5);
+    this.shadowLayer.scale.set(1 + clamped * 0.035);
+    this.shadowLayer.alpha = Math.max(0.14, 0.34 - clamped * 0.11);
+  }
+
+  /**
+   * Aplica un giro 3D suave (progress 0..1) sin interferir con el scale/rotation externos.
+   */
+  public applyFlip(progress: number, fromFaceUp: boolean, toFaceUp: boolean): void {
+    const p = Math.max(0, Math.min(1, progress));
+    const cos = Math.cos(p * Math.PI);
+    const sin = Math.sin(p * Math.PI);
+    const widthScale = Math.max(0.025, Math.abs(cos));
+
+    this.flipPivot.scale.set(widthScale, 1);
+    this.flipPivot.skew.set(0, sin * (toFaceUp ? -0.11 : 0.11));
+    this.edgeFlash.visible = widthScale < 0.24;
+
+    const showFront = p < 0.5 ? fromFaceUp : toFaceUp;
+    if (this._faceUp !== showFront) {
+      this.setFaceUp(showFront);
+    }
+    this.shadowLayer.scale.set(
+      Math.max(0.18, widthScale) * (1 + this._elevation * 0.035),
+      1 + this._elevation * 0.035,
+    );
+  }
+
+  public resetFlip(): void {
+    this.flipPivot.scale.set(1, 1);
+    this.flipPivot.skew.set(0, 0);
+    this.edgeFlash.visible = false;
+    this.setElevation(this._elevation);
   }
 
   public setHighlighted(on: boolean): void {
@@ -428,13 +655,7 @@ export class CardView extends Container {
       (this.card.rank === 1 && this.card.suit === "espadas") ||
       (this.card.rank === 1 && this.card.suit === "bastos");
 
-    // Sombra de contacto realista
-    g.roundRect(-HALF_W + 2.5, -HALF_H + 4.5, CARD_WIDTH, CARD_HEIGHT, 10).fill({
-      color: 0x000000,
-      alpha: 0.34,
-    });
-
-    // Cuerpo marfil cálido estilo naipes de algodón
+    // Cuerpo marfil cálido estilo naipes de algodón (la sombra vive en shadowLayer)
     g.roundRect(-HALF_W, -HALF_H, CARD_WIDTH, CARD_HEIGHT, 10)
       .fill(isSpecialPiece ? 0xfdf5dc : PALETTE.ivory)
       .stroke({

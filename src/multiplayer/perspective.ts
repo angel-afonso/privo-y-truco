@@ -255,8 +255,14 @@ export function sanitizeCanonicalStateForViewer(
           state.flor.winnerPlayer === viewerSeat ? state.flor.isReservada : undefined,
       };
 
+  // Las salas guardadas por versiones anteriores incluyen el motivo privado en el canto.
+  const publicEvent = (event: GameEvent) => event.bubble === "¡A LEY!"
+    ? { ...event, text: event.text.replace(/ \(Flor reservada hasta la 2\.ª carta\)| \(con ley en la mesa\)/, "") }
+    : event;
   return {
     ...state,
+    log: state.log.map(publicEvent),
+    lastEvent: state.lastEvent && publicEvent(state.lastEvent),
     initialHands: sanitizedInitialHands,
     hands: sanitizedHands,
     tricks: sanitizedTricks,

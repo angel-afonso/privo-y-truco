@@ -1039,3 +1039,164 @@ describe("Nombres en resúmenes online", () => {
       .toBe("El equipo rival gana el lance del Truco");
   });
 });
+
+describe("Jugadas de parejas y cierre de apuestas", () => {
+  function mesa(conFlor = true) {
+    return new TrucoEngine({ mode: "2v2", withFlor: conFlor }, {
+      customDeal: () => ({
+        vira: card(4, "espadas"),
+        hands: {
+          player: [card(7, "copas"), card(6, "copas"), card(5, "copas")],
+          cpu: [card(4, "bastos"), card(3, "bastos"), card(2, "bastos")],
+          partner: [card(1, "oros"), card(2, "oros"), card(3, "oros")],
+          cpu2: [card(1, "copas"), card(2, "copas"), card(3, "espadas")],
+        },
+      }),
+    });
+  }
+
+  test("Una Flor perdida al cantar Truco tampoco puede interrumpir un Envido", () => {
+    const e = mesa();
+    e.dispatch("player", { type: "CALL_A_LEY" });
+    e.dispatch("player", { type: "CALL_TRUCO" });
+    e.dispatch("cpu2", { type: "CALL_ENVIDO", call: "envido" });
+    expect(e.getState().ley.forfeitedBy).toContain("player");
+    expect(e.getLegalActions("player").canCallFlor).toBe(false);
+    e.dispatch("player", { type: "CALL_FLOR" });
+    expect(e.getState().phase).toBe("AWAITING_ENVIDO");
+    expect(e.getState().scores.nosotros).toBe(0);
+    expect(e.getLegalActions("partner").canCallFlor).toBe(true);
+  });
+
+  test("La Flor de 29 gana a la de 26 aunque el compañero haya dejado pasar una de 38", () => {
+    const e = mesa();
+    e.dispatch("player", { type: "PLAY_CARD", cardId: "7_copas" });
+    e.dispatch("cpu", { type: "CALL_FLOR" });
+    e.dispatch("partner", { type: "RESPOND_FLOR", choice: "contraflor" });
+    e.dispatch("cpu", { type: "RESPOND_FLOR", choice: "quiero" });
+    e.dispatch("cpu", { type: "IRSE_AL_MAZO" });
+    expect(e.getState().flor).toMatchObject({ winnerPlayer: "cpu", pointsAwarded: 5,
+      nosotrosBestPlayer: "partner", nosotrosPoints: 26, ellosPoints: 29 });
+  });
+
+  test("Envido sobre Truco exige tres cartas propias y la primera respuesta al envite compromete a la pareja", () => {
+    const e = mesa(false);
+    e.dispatch("player", { type: "PLAY_CARD", cardId: "7_copas" });
+    e.dispatch("cpu", { type: "CALL_TRUCO" });
+    expect(e.getLegalActions("player").envidoCalls).toEqual([]);
+    expect(e.getLegalActions("partner").envidoCalls).toContain("envido_cinco");
+    e.dispatch("partner", { type: "CALL_ENVIDO", call: "envido_cinco" });
+    for (const seat of ["cpu", "cpu2"] as const) expect(e.getLegalActions(seat).canRespondEnvido).toBe(true);
+    e.dispatch("cpu2", { type: "RESPOND_ENVIDO", accept: true });
+    e.dispatch("cpu", { type: "RESPOND_ENVIDO", accept: false });
+    expect(e.getState().envido).toMatchObject({ accepted: true, stakedPoints: 5 });
+    expect(e.getState().phase).toBe("AWAITING_TRUCO");
+  });
+
+  test("El canto público A ley es idéntico con Flor y sin ella", () => {
+    const con = mesa(), sin = mesa();
+    const cards = sin.getState().initialHands;
+    [cards.player![0], cards.cpu2![2]] = [cards.cpu2![2], cards.player![0]];
+    sin.getState().hands.player = [...cards.player!];
+    sin.getState().hands.cpu2 = [...cards.cpu2!];
+    for (const e of [con, sin]) e.dispatch("player", { type: "CALL_A_LEY" });
+    expect(con.getState().ley.hiddenFlorPlayers).toEqual(["player"]);
+    expect(sin.getState().ley.hiddenFlorPlayers).toEqual([]);
+    expect(buildSafeViewerState(con.getState(), "cpu").lastEvent)
+      .toEqual(buildSafeViewerState(sin.getState(), "cpu").lastEvent);
+  });
+
+  test("A ley corresponde a los tres primeros asientos, en su primera carta", () => {
+    const e = mesa();
+    for (const seat of e.getState().seats) {
+      expect(e.getLegalActions(seat).canCallALey).toBe(seat !== "cpu2");
+      e.dispatch(seat, { type: "PLAY_CARD", cardId: e.getState().hands[seat]![0].id });
+    }
+  });
+
+  test("Al ganar Vale Juego de 17 a 24, el resumen acredita siete piedras", () => {
+    const e = new TrucoEngine({ withFlor: false, targetScore: 24 });
+    e.getState().scores = { nosotros: 20, ellos: 17 };
+    for (const seat of ["player", "cpu", "player", "cpu"] as const) e.dispatch(seat, { type: "CALL_TRUCO" });
+    e.dispatch("player", { type: "RESPOND_TRUCO", accept: true });
+    e.dispatch("player", { type: "IRSE_AL_MAZO" });
+    expect(e.getState().scores.ellos).toBe(24);
+    expect(e.getState().handSummary?.trucoPoints).toBe(7);
+  });
+
+  test("En 2v2, el Pie con Flor (2 cartas del mismo palo + pieza) puede cantar Flor y anular un Envido querido incluso si hubo Truco pendiente o aceptado", () => {
+    function crearMesaPieConFlor() {
+      const e = new TrucoEngine(
+        { mode: "2v2", targetScore: 24, withFlor: true },
+        {
+          customDeal: () => ({
+            vira: card(3, "bastos"), // Perico = 11 bastos, Perica = 10 bastos
+            hands: {
+              cpu: [card(7, "oros"), card(6, "oros"), card(4, "espadas")], // Mano (33 envido)
+              partner: [card(7, "espadas"), card(5, "espadas"), card(2, "copas")], // Trasmano (32 envido)
+              cpu2: [card(1, "espadas"), card(3, "oros"), card(4, "copas")], // Antepié
+              player: [card(11, "bastos"), card(6, "copas"), card(5, "copas")], // Pie: Perico + 2 copas = Flor (41)
+            },
+          }),
+        },
+      );
+      e.startNewMatch({ mode: "2v2", targetScore: 24, withFlor: true }, "cpu");
+      return e;
+    }
+
+    // Caso 1: Trasmano envida, rival quiere, y el rival canta Truco antes del turno del Pie -> Pie puede interrumpir con Flor
+    {
+      const e = crearMesaPieConFlor();
+      e.dispatch("cpu", { type: "PLAY_CARD", cardId: "4_espadas" });
+      e.dispatch("partner", { type: "CALL_ENVIDO", call: "envido" });
+      e.dispatch("cpu2", { type: "RESPOND_ENVIDO", accept: true });
+      e.dispatch("partner", { type: "PLAY_CARD", cardId: "2_copas" });
+      e.dispatch("cpu2", { type: "CALL_TRUCO" });
+
+      expect(e.getState().phase).toBe("AWAITING_TRUCO");
+      expect(e.getState().truco.responder).toBe("player");
+      expect(e.getLegalActions("player").canCallFlor).toBe(true);
+
+      e.dispatch("player", { type: "CALL_FLOR" });
+      expect(e.getState().scores.nosotros).toBe(3);
+      expect(e.getState().envido.accepted).toBe(false);
+      expect(e.getState().envido.pendingSettlement).toBe(false);
+      expect(e.getState().phase).toBe("AWAITING_TRUCO");
+
+      // Al terminar la mano no debe pagarse el Envido anulado
+      e.dispatch("player", { type: "RESPOND_TRUCO", accept: false });
+      expect(e.getState().scores).toEqual({ nosotros: 3, ellos: 1 });
+      expect(e.getState().handSummary?.envidoText).toBeUndefined();
+    }
+
+    // Caso 2: Trasmano envida, rival quiere, y además se canta y acepta Truco antes del turno del Pie -> Pie sigue pudiendo cantar Flor en su turno
+    {
+      const e = crearMesaPieConFlor();
+      e.dispatch("cpu", { type: "PLAY_CARD", cardId: "4_espadas" });
+      e.dispatch("partner", { type: "CALL_ENVIDO", call: "envido" });
+      e.dispatch("cpu", { type: "RESPOND_ENVIDO", accept: true });
+      e.dispatch("partner", { type: "CALL_TRUCO" });
+      e.dispatch(e.getState().truco.responder!, { type: "RESPOND_TRUCO", accept: true });
+      e.dispatch("partner", { type: "PLAY_CARD", cardId: "2_copas" });
+      e.dispatch("cpu2", { type: "PLAY_CARD", cardId: "4_copas" });
+
+      expect(e.getState().phase).toBe("PLAYING");
+      expect(e.getState().turn).toBe("player");
+      expect(e.getState().truco.level).toBe(1);
+      expect(e.getLegalActions("player").canCallFlor).toBe(true);
+
+      e.dispatch("player", { type: "CALL_FLOR" });
+      expect(e.getState().scores.nosotros).toBe(3);
+      expect(e.getState().envido.accepted).toBe(false);
+      expect(e.getState().envido.pendingSettlement).toBe(false);
+      expect(e.getState().phase).toBe("PLAYING");
+      expect(e.getState().turn).toBe("player");
+      expect(e.getState().truco.level).toBe(1);
+
+      // Si el Pie se va al mazo luego, solo se pagan las 3 del Truco a Ellos (el Envido quedó anulado)
+      e.dispatch("player", { type: "IRSE_AL_MAZO" });
+      expect(e.getState().scores).toEqual({ nosotros: 3, ellos: 3 });
+      expect(e.getState().handSummary?.envidoText).toBeUndefined();
+    }
+  });
+});

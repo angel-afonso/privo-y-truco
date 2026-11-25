@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { TrucoEngine } from "../src/engine/gameEngine";
 import { buildSafeViewerState } from "../src/multiplayer/perspective";
-import { previewPlayerAction } from "../src/multiplayer/optimisticAction";
+import { previewPlayerAction, optimisticFeedback } from "../src/multiplayer/optimisticAction";
+import { buildInboxTopic, computeInboxToken } from "../src/multiplayer/inboxToken";
 
 describe("Vista optimista de la mesa", () => {
   for (const burned of [false, true]) {
@@ -39,5 +40,41 @@ describe("Vista optimista de la mesa", () => {
     expect(preview.scores).toEqual(view.scores);
     expect(previewPlayerAction(view, { type: "NEXT_HAND" })).toBe(view);
     expect(previewPlayerAction(view, { type: "PLAY_CARD", cardId: "ausente" })).toBe(view);
+  });
+
+  test("Feedback optimista genera globo y sonido inmediato para cantos y respuestas", () => {
+    const engine = new TrucoEngine({ withFlor: true });
+    const state = engine.startNewMatch(undefined, "player");
+    const view = buildSafeViewerState(state, "player");
+
+    expect(optimisticFeedback({ type: "PLAY_CARD", cardId: view.hands.player![0].id }, view)).toEqual({
+      sound: "card",
+    });
+    expect(optimisticFeedback({ type: "CALL_TRUCO" }, view, 1)).toEqual({
+      bubble: "Truco",
+      accent: "truco",
+      sound: "call",
+    });
+    expect(optimisticFeedback({ type: "RESPOND_TRUCO", accept: true }, view)).toEqual({
+      bubble: "¡Quiero!",
+      accent: "default",
+      sound: "response",
+    });
+    expect(optimisticFeedback({ type: "CALL_FLOR" }, view)).toEqual({
+      bubble: "¡FLOR!",
+      accent: "flor",
+      sound: "call",
+    });
+  });
+
+  test("El canal privado de bandeja es determinístico y no expone el secreto", async () => {
+    const tokenA = await computeInboxToken("ABC123", "client-a", "super-secret-a");
+    const tokenA2 = await computeInboxToken("ABC123", "client-a", "super-secret-a");
+    const tokenB = await computeInboxToken("ABC123", "client-b", "super-secret-b");
+    expect(tokenA).toBe(tokenA2);
+    expect(tokenA).not.toBe(tokenB);
+    expect(tokenA).toHaveLength(32);
+    expect(buildInboxTopic("ABC123", tokenA)).toBe(`truco-inbox:ABC123:${tokenA}`);
+    expect(buildInboxTopic("ABC123", tokenA)).not.toContain("super-secret-a");
   });
 });

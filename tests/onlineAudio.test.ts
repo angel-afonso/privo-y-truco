@@ -123,3 +123,14 @@ test("Los cantos en línea usan la frase pública y conservan la respuesta aunqu
   soundFX.playOnlineUpdate(undefined, after, false);
   expect(voice.mock.calls.flat()).toEqual(["envido-cinco", "no-quiero", "truco", "no-quiero"]);
 });
+
+test("No duplica el efecto sonoro de una jugada propia ya reproducida de forma optimista", () => {
+  const engine = new TrucoEngine({ withFlor: false });
+  const state = engine.startNewMatch(undefined, "player");
+  const before = buildSafeViewerState(state, "player");
+  engine.dispatch("player", { type: "PLAY_CARD", cardId: state.hands.player![0].id });
+  const after = buildSafeViewerState(state, "player");
+  const slap = spyOn(soundFX, "playCardSlap").mockImplementation(() => {});
+  soundFX.playOnlineUpdate(before, after, false, true);
+  expect(slap).not.toHaveBeenCalled();
+});

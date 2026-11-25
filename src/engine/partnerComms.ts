@@ -71,7 +71,7 @@ export function buildPartnerEnvidoAdvice(state: GameState): PartnerMessage {
     const pFlor = evaluateFlor(partnerInitial, vira);
     const partnerPlayedTrick0 = Boolean(state.tricks[0]?.played.partner);
     const partnerHasHiddenALey = state.ley.hiddenFlorPlayers.includes("partner");
-    if (pFlor.hasFlor && (!partnerPlayedTrick0 || partnerHasHiddenALey || pFlor.isReservada)) {
+    if (pFlor.hasFlor && !state.ley.forfeitedBy.includes("partner") && (!partnerPlayedTrick0 || partnerHasHiddenALey || pFlor.isReservada)) {
       if (pFlor.isReservada) {
         return {
           headline: "Perico y Perica · La reservo al final",

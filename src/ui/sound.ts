@@ -2,7 +2,15 @@ import type { GameEvent, GameState } from "../engine/types";
 
 import { cantoAudioPath, eventCanto, nextCantoTake, type Canto, type CantoTake } from "./cantos";
 
-const VOICE_CACHE_BYTES = 1024 * 1024;
+const VOICE_CACHE_BYTES = 2 * 1024 * 1024;
+const COMMON_PRELOAD_CANTOS: readonly Canto[] = [
+  "truco",
+  "envido",
+  "quiero",
+  "no-quiero",
+  "flor",
+  "me-voy",
+];
 const bufferBytes = (buffer: AudioBuffer) => buffer.length * buffer.numberOfChannels * Float32Array.BYTES_PER_ELEMENT;
 
 class SoundFX {
@@ -12,6 +20,7 @@ class SoundFX {
 
   private buffers = new Map<string, AudioBuffer>();
   private cachedBytes = 0;
+  private preloaded = false;
   private lastTake = new Map<Canto, CantoTake>();
   private voice: AudioBufferSourceNode | null = null;
   private voiceQueue = Promise.resolve();
@@ -49,8 +58,26 @@ class SoundFX {
     this.voiceQueue = Promise.resolve();
     this.voice?.stop();
     this.voice = null;
-    this.buffers.clear();
-    this.cachedBytes = 0;
+  }
+
+  public preloadCommonCantos(): void {
+    if (this.preloaded || this.muted || typeof fetch !== "function") return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    this.preloaded = true;
+    const controller = new AbortController();
+    void (async () => {
+      for (const canto of COMMON_PRELOAD_CANTOS) {
+        if (this.muted || ctx.state !== "running") break;
+        const filename = `${canto}.directa.mp3`;
+        if (this.buffers.has(filename)) continue;
+        try {
+          await this.loadVoice(ctx, filename, controller.signal);
+        } catch {
+          // Ignorar errores de precarga silenciosamente
+        }
+      }
+    })();
   }
 
   public playCanto(canto: Canto): void {
@@ -97,7 +124,11 @@ class SoundFX {
         this.output = this.ctx.createGain();
         this.output.connect(this.ctx.destination);
       }
-      if (this.ctx.state !== "running") void this.ctx.resume().catch(() => {});
+      if (this.ctx.state !== "running") {
+        void this.ctx.resume().then(() => this.preloadCommonCantos()).catch(() => {});
+      } else {
+        this.preloadCommonCantos();
+      }
     };
     document.addEventListener("click", unlock, { capture: true });
     document.addEventListener("keydown", unlock, { capture: true });
@@ -122,7 +153,12 @@ class SoundFX {
     }
   }
 
-  public playOnlineUpdate(previous: GameState | undefined, current: GameState, turnBegan: boolean): void {
+  public playOnlineUpdate(
+    previous: GameState | undefined,
+    current: GameState,
+    turnBegan: boolean,
+    skipPlayerActionSfx = false,
+  ): void {
     const last = current.lastEvent;
     if (previous && last && last.id > (previous.lastEvent?.id ?? 0)) {
       // Una misma carta puede generar también el cierre de baza, mano o partida.
@@ -130,7 +166,9 @@ class SoundFX {
       this.playNewCantos(events, previous.lastEvent?.id ?? 0);
       const action = events.reverse().find(e =>
         e.type === "play_card" || e.type === "burn_card" || e.type === "call" || e.type === "response");
-      if (action) this.playEvent(action.type, current.matchWinner === "nosotros");
+      if (action && !(skipPlayerActionSfx && action.actor === "player")) {
+        this.playEvent(action.type, current.matchWinner === "nosotros");
+      }
       if (last.id !== action?.id) this.playEvent(last.type, current.matchWinner === "nosotros");
     }
     if (turnBegan) this.playTurnCue();
@@ -199,30 +237,103 @@ class SoundFX {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
-    for (let k = 0; k < 5; k++) {
-      const t = now + k * 0.042;
-      const len = Math.floor(ctx.sampleRate * 0.032);
+    const leaves = 10;
+    let offset = 0;
+    for (let k = 0; k < leaves; k++) {
+      // Cadencia orgánica: arranca sutil, acelera en el centro del riffle y asienta al final
+      const step = 0.032 - Math.sin((k / (leaves - 1)) * Math.PI) * 0.011;
+      const t = now + offset;
+      offset += step;
+
+      const len = Math.floor(ctx.sampleRate * 0.026);
       const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
       const data = buffer.getChannelData(0);
       for (let i = 0; i < len; i++) {
-        data[i] = (Math.random() * 2 - 1) * (1 - i / len) * 0.28;
+        const env = Math.pow(1 - i / len, 1.45);
+        data[i] = (Math.random() * 2 - 1) * env * 0.3;
       }
       const noise = ctx.createBufferSource();
       noise.buffer = buffer;
 
       const filter = ctx.createBiquadFilter();
       filter.type = "bandpass";
-      filter.frequency.setValueAtTime(1600 + k * 140, t);
+      filter.Q.setValueAtTime(1.4, t);
+      filter.frequency.setValueAtTime(1450 + k * 95, t);
 
       const gain = ctx.createGain();
-      gain.gain.setValueAtTime(0.16, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.032);
+      const peak = 0.12 + Math.sin((k / (leaves - 1)) * Math.PI) * 0.055;
+      gain.gain.setValueAtTime(peak, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.026);
 
       noise.connect(filter);
       filter.connect(gain);
       gain.connect(this.output!);
       noise.start(t);
     }
+  }
+
+  public playDeckCut(): void {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(140, now);
+    osc.frequency.exponentialRampToValueAtTime(52, now + 0.065);
+    gain.gain.setValueAtTime(0.18, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.075);
+    osc.connect(gain);
+    gain.connect(this.output!);
+    osc.start(now);
+    osc.stop(now + 0.08);
+
+    const len = Math.floor(ctx.sampleRate * 0.045);
+    const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      data[i] = (Math.random() * 2 - 1) * (1 - i / len) * 0.25;
+    }
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(1100, now);
+    const nGain = ctx.createGain();
+    nGain.gain.setValueAtTime(0.12, now);
+    nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.045);
+    noise.connect(filter);
+    filter.connect(nGain);
+    nGain.connect(this.output!);
+    noise.start(now);
+  }
+
+  public playCardFlip(): void {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const len = Math.floor(ctx.sampleRate * 0.055);
+    const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      const p = i / len;
+      const env = Math.sin(p * Math.PI);
+      data[i] = (Math.random() * 2 - 1) * env * 0.24;
+    }
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.setValueAtTime(1900, now);
+    filter.frequency.exponentialRampToValueAtTime(950, now + 0.055);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.11, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.055);
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.output!);
+    noise.start(now);
   }
 
   public playCardSlap(): void {
@@ -322,6 +433,24 @@ class SoundFX {
       osc.start(t);
       osc.stop(t + 0.16);
     });
+  }
+
+  public playChatPop(): void {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(520, now);
+    osc.frequency.exponentialRampToValueAtTime(740, now + 0.055);
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.055, now + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+    osc.connect(gain);
+    gain.connect(this.output!);
+    osc.start(now);
+    osc.stop(now + 0.1);
   }
 }
 

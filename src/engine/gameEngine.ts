@@ -61,14 +61,14 @@ const DEFAULT_CONFIG: GameConfig = {
 export class TrucoEngine {
   private state: GameState;
   private eventSeq = 1;
-  private rng: () => number;
+  private rng?: () => number;
   private customDeal?: (seats: PlayerId[]) => DealResult;
 
   constructor(
     config: Partial<GameConfig> = {},
     options?: { rng?: () => number; customDeal?: (seats: PlayerId[]) => DealResult },
   ) {
-    this.rng = options?.rng ?? Math.random;
+    this.rng = options?.rng;
     this.customDeal = options?.customDeal;
     const mergedConfig: GameConfig = { ...DEFAULT_CONFIG, ...config };
     this.state = this.createInitialMatchState(mergedConfig, "player");
@@ -235,6 +235,7 @@ export class TrucoEngine {
 
   private isActorEligibleForFlor(actor: PlayerId): boolean {
     return (
+      !this.state.ley.forfeitedBy.includes(actor) &&
       this.actorHasFlor(actor) &&
       (!this.hasPlayedInTrick(actor, 0) ||
         this.hasDeferredFlorALey(actor) ||
@@ -242,18 +243,8 @@ export class TrucoEngine {
     );
   }
 
-  private getTeamEligibleFlorHolders(team: TeamId): PlayerId[] {
-    return this.getTeamMembers(team).filter((p) => this.isActorEligibleForFlor(p));
-  }
-
-  /**
-   * Elige quién responde una Flor / Contraflor: SIEMPRE un jugador que realmente tiene Flor
-   * (jamás el compañero sin Flor). Si ambos la tienen, prioriza al jugador humano.
-   */
-  private pickFlorResponder(team: TeamId, eligibleOnly = true): PlayerId | undefined {
-    const holders = eligibleOnly
-      ? this.getTeamEligibleFlorHolders(team)
-      : this.getTeamMembers(team).filter((p) => this.actorHasFlor(p));
+  private pickFlorResponder(team: TeamId): PlayerId | undefined {
+    const holders = this.getTeamMembers(team).filter(seat => this.isActorEligibleForFlor(seat));
     if (holders.length === 0) return undefined;
     if (team === "nosotros" && holders.includes("player")) return "player";
     return holders[0];
@@ -277,36 +268,6 @@ export class TrucoEngine {
       }
     }
     return { points: bestPts, player: bestPlayer };
-  }
-
-  private getTeamBestFlor(team: TeamId): {
-    hasFlor: boolean;
-    isReservada: boolean;
-    points: number;
-    player?: PlayerId;
-  } {
-    const s = this.state;
-    const members = this.getTeamMembers(team);
-    let best = { hasFlor: false, isReservada: false, points: -1, player: undefined as PlayerId | undefined };
-    let bestDist = Infinity;
-
-    for (const m of members) {
-      const hand = s.initialHands[m] ?? [];
-      const ev = evaluateFlor(hand, s.vira);
-      if (!ev.hasFlor) continue;
-      const dist = getSeatDistanceFromMano(m, s.mano, s.seats);
-      const better =
-        !best.hasFlor ||
-        (ev.isReservada && !best.isReservada) ||
-        (ev.isReservada === best.isReservada &&
-          (ev.points > best.points || (ev.points === best.points && dist < bestDist)));
-      if (better) {
-        best = { ...ev, player: m };
-        bestDist = dist;
-      }
-    }
-
-    return best.hasFlor ? best : { hasFlor: false, isReservada: false, points: 0 };
   }
 
   public getLegalActions(actor: PlayerId): LegalActions {
@@ -367,7 +328,7 @@ export class TrucoEngine {
 
     // 2) AWAITING_ENVIDO
     if (s.phase === "AWAITING_ENVIDO") {
-      if (s.envido.responder !== actor) return empty;
+      if (s.envido.responderTeam !== actorTeam) return empty;
       // Solo quien tiene Flor en SU propia mano puede cantar su Flor (nunca la del compañero)
       const canFlorInterrupt = !s.flor.resolved && this.isActorEligibleForFlor(actor);
       const deferredALey = this.hasDeferredFlorALey(actor);
@@ -383,36 +344,34 @@ export class TrucoEngine {
 
     // 3) AWAITING_TRUCO
     if (s.phase === "AWAITING_TRUCO") {
-      if (s.truco.responder !== actor) return empty;
+      if (s.truco.responderTeam !== actorTeam) return empty;
+      const isResponder = s.truco.responder === actor;
       const pending = s.truco.pendingLevel ?? 1;
-      const canRaise = pending < 4;
+      const canRaise = isResponder && pending < 4;
       const nextTrucoLevel = canRaise ? ((pending + 1) as TrucoLevel) : undefined;
 
-      const teamHasUnplayedTrick0 = this.getTeamMembers(actorTeam).some(
-        (m) => this.state.trickIndex === 0 && !this.hasPlayedInTrick(m, 0),
-      );
-
-      const canFirstTrickInterrupt =
+      const canFirstTrickEnvido =
         pending === 1 &&
         !s.envido.resolved &&
         !s.flor.resolved &&
-        teamHasUnplayedTrick0;
+        s.trickIndex === 0;
 
-      // Solo el propio jugador con Flor puede cantar SU Flor
+      // Solo el propio jugador con Flor puede cantar SU Flor (incluso si antes ya hubo Envido o Truco en 1.ª baza)
       const actorHasEligibleFlor = this.isActorEligibleForFlor(actor);
       const deferredALey = this.hasDeferredFlorALey(actor);
       const canCallFlor =
         !s.flor.resolved &&
-        ((canFirstTrickInterrupt && actorHasEligibleFlor) || deferredALey);
+        !s.prive &&
+        ((s.trickIndex === 0 && actorHasEligibleFlor) || deferredALey);
 
       const envidoCalls: EnvidoCallType[] =
-        canFirstTrickInterrupt && !actorHasEligibleFlor
+        canFirstTrickEnvido && this.isPlayerEligibleForFirstTrickLances(actor) && !actorHasEligibleFlor
           ? ["envido", "envido_cinco", "falta_envido"]
           : [];
 
       return {
         ...empty,
-        canRespondTruco: true,
+        canRespondTruco: isResponder,
         canCallTruco: canRaise,
         nextTrucoLevel,
         canCallFlor,
@@ -428,13 +387,14 @@ export class TrucoEngine {
       const hand = s.hands[actor] ?? [];
       const canPlayCard = hand.length > 0;
       const canFirstTrick = this.isPlayerEligibleForFirstTrickLances(actor);
-      const hasActorFlor = this.actorHasFlor(actor);
+      const hasActorFlor = this.isActorEligibleForFlor(actor);
       const deferredALey = this.hasDeferredFlorALey(actor);
 
       const canCallALey = this.canActorCallALey(actor) && s.truco.level === 0;
       const canCallFlor =
-        (canFirstTrick && !s.flor.resolved && hasActorFlor && s.truco.level === 0) ||
-        deferredALey;
+        !s.flor.resolved &&
+        !s.prive &&
+        ((canFirstTrick && hasActorFlor) || deferredALey);
       const mustCallFlorALey = deferredALey && s.trickIndex === 1;
       const envidoCalls: EnvidoCallType[] =
         canFirstTrick &&
@@ -665,36 +625,16 @@ export class TrucoEngine {
       s.ley.hiddenFlorPlayers = [...s.ley.hiddenFlorPlayers, actor];
     }
 
-    const note = hasRealFlor
-      ? " (Flor reservada hasta la 2.ª carta)"
-      : " (con ley en la mesa)";
-    this.emit(
-      actor,
-      "call",
-      `${this.actorLabel(actor)} canta ¡A Ley!${note}`,
-      "¡A LEY!",
-    );
+    this.emit(actor, "call", `${this.actorLabel(actor)} canta ¡A Ley!`, "¡A LEY!");
   }
 
-  private forfeitDeferredFlorIfNeeded(actor: PlayerId, reason: string): void {
-    const s = this.state;
-    if (this.hasDeferredFlorALey(actor)) {
-      s.ley.hiddenFlorPlayers = s.ley.hiddenFlorPlayers.filter((p) => p !== actor);
-      if (!s.ley.forfeitedBy.includes(actor)) {
-        s.ley.forfeitedBy = [...s.ley.forfeitedBy, actor];
-      }
-      if (s.ley.hiddenFlorPlayers.length === 0) {
-        s.ley.active = false;
-        if (s.trickIndex >= 1) {
-          s.flor.resolved = true;
-        }
-      }
-      this.emit(
-        actor,
-        "response",
-        `${this.actorLabel(actor)} perdió la Flor (${reason}).`,
-      );
-    }
+  private closeDeferredFlor(actor: PlayerId): void {
+    const { ley, flor, trickIndex } = this.state;
+    if (flor.resolved || !ley.declaredBy.includes(actor) || ley.forfeitedBy.includes(actor)) return;
+    ley.hiddenFlorPlayers = ley.hiddenFlorPlayers.filter(seat => seat !== actor);
+    ley.forfeitedBy.push(actor);
+    ley.active = ley.declaredBy.some(seat => !ley.forfeitedBy.includes(seat));
+    if (!ley.active && trickIndex >= 1) flor.resolved = true;
   }
 
   private handleCallFlor(actor: PlayerId): void {
@@ -706,9 +646,7 @@ export class TrucoEngine {
     const actualHolder = actor;
 
     s.ley.hiddenFlorPlayers = s.ley.hiddenFlorPlayers.filter((p) => p !== actualHolder);
-    if (s.ley.hiddenFlorPlayers.length === 0) {
-      s.ley.active = false;
-    }
+    s.ley.active = false;
 
     // Si interrumpe Truco, pausarlo
     if (s.phase === "AWAITING_TRUCO" && s.truco.pendingLevel && s.truco.caller && s.truco.callerTeam) {
@@ -716,7 +654,7 @@ export class TrucoEngine {
         pendingLevel: s.truco.pendingLevel,
         caller: s.truco.caller,
         callerTeam: s.truco.callerTeam,
-        responder: actor,
+        responder: s.truco.responder ?? actor,
         responderTeam: actorTeam,
         turnBeforeCall: s.turnBeforeCall ?? s.turn,
       };
@@ -729,10 +667,14 @@ export class TrucoEngine {
       s.turnBeforeCall = s.turn;
     }
 
-    // Flor cancela cualquier Envido
+    // Flor cancela cualquier Envido (pendiente, aceptado o rechazado)
     s.envido.resolved = true;
+    s.envido.accepted = false;
     s.envido.pendingSettlement = false;
     s.envido.stakedPoints = undefined;
+    s.envido.winnerTeam = undefined;
+    s.envido.winnerPlayer = undefined;
+    s.envido.pointsAwarded = 0;
     s.envido.chain = [];
     s.envido.caller = undefined;
     s.envido.callerTeam = undefined;
@@ -740,7 +682,7 @@ export class TrucoEngine {
     s.envido.responderTeam = undefined;
 
     const actorFlor = evaluateFlor(s.initialHands[actualHolder] ?? [], s.vira);
-    const oppFlorResponder = this.pickFlorResponder(oppTeam, true);
+    const oppFlorResponder = this.pickFlorResponder(oppTeam);
 
     // Ambos equipos tienen Flor -> responde únicamente el jugador rival que tiene Flor
     if (oppFlorResponder) {
@@ -840,10 +782,10 @@ export class TrucoEngine {
       s.flor.stakedPoints = 5;
       s.flor.rejectPoints = 4;
       s.flor.stage = "contraflor";
+      s.flor.responder = s.flor.caller;
       s.flor.caller = actor;
       s.flor.callerTeam = actorTeam;
       s.flor.responderTeam = oppTeam;
-      s.flor.responder = this.pickFlorResponder(oppTeam, false) ?? this.pickResponder(oppTeam);
       this.emit(
         actor,
         "call",
@@ -857,10 +799,10 @@ export class TrucoEngine {
       s.flor.rejectPoints = s.flor.stage === "flor" ? 4 : s.flor.stakedPoints ?? 6;
       s.flor.stakedPoints = calculateFaltaEnvidoPoints(s.scores, s.config);
       s.flor.stage = "contraflor_resto";
+      s.flor.responder = s.flor.caller;
       s.flor.caller = actor;
       s.flor.callerTeam = actorTeam;
       s.flor.responderTeam = oppTeam;
-      s.flor.responder = this.pickFlorResponder(oppTeam, false) ?? this.pickResponder(oppTeam);
       this.emit(
         actor,
         "call",
@@ -919,7 +861,7 @@ export class TrucoEngine {
         pendingLevel: s.truco.pendingLevel,
         caller: s.truco.caller,
         callerTeam: s.truco.callerTeam,
-        responder: actor,
+        responder: s.truco.responder ?? actor,
         responderTeam: actorTeam,
         turnBeforeCall: s.turnBeforeCall ?? s.turn,
       };
@@ -938,7 +880,7 @@ export class TrucoEngine {
     s.envido.callerTeam = actorTeam;
     s.envido.responderTeam = oppTeam;
     // Si alguien del equipo rival tiene Flor elegible, responde ESE jugador personalmente (nadie canta la Flor del compañero)
-    const oppFlorHolder = !s.flor.resolved ? this.pickFlorResponder(oppTeam, true) : undefined;
+    const oppFlorHolder = !s.flor.resolved ? this.pickFlorResponder(oppTeam) : undefined;
     s.envido.responder = oppFlorHolder ?? this.pickResponder(oppTeam);
 
     const withLeyPrefix =
@@ -992,7 +934,7 @@ export class TrucoEngine {
     const oppTeam = getOppositeTeam(actorTeam);
 
     // Si alguien del equipo tenía Flor guardada "a ley" y cantan Truco sin declararla, la pierde
-    this.forfeitDeferredFlorIfNeeded(actor, "cantó Truco sin declarar su Flor primero");
+    this.closeDeferredFlor(actor);
 
     let nextLevel: TrucoLevel;
     if (s.phase === "AWAITING_TRUCO" && s.truco.pendingLevel) {
@@ -1011,7 +953,17 @@ export class TrucoEngine {
     s.truco.caller = actor;
     s.truco.callerTeam = actorTeam;
     s.truco.responderTeam = oppTeam;
-    s.truco.responder = priveResponder ?? this.pickResponder(oppTeam);
+    const oppFlorHolder =
+      !priveResponder && s.trickIndex === 0 && !s.flor.resolved
+        ? this.pickFlorResponder(oppTeam)
+        : undefined;
+    const nextOpponent = this.getNextSeat(actor);
+    const preferred =
+      oppFlorHolder ??
+      (nextLevel === 1 && !s.envido.resolved && this.isPlayerEligibleForFirstTrickLances(nextOpponent)
+        ? nextOpponent
+        : undefined);
+    s.truco.responder = priveResponder ?? this.pickResponder(oppTeam, preferred);
 
     this.emit(
       actor,
@@ -1027,7 +979,7 @@ export class TrucoEngine {
     const oppTeam = getOppositeTeam(actorTeam);
     const pending = s.truco.pendingLevel ?? 1;
 
-    this.forfeitDeferredFlorIfNeeded(actor, "respondió al Truco sin declarar su Flor primero");
+    this.closeDeferredFlor(actor);
 
     if (!accept) {
       const pts = getTrucoRejectPoints(pending);
@@ -1113,7 +1065,7 @@ export class TrucoEngine {
     const trick = s.tricks[s.trickIndex];
 
     if (s.trickIndex === 1) {
-      this.forfeitDeferredFlorIfNeeded(actor, "jugó la 2.ª carta sin cantarla");
+      this.closeDeferredFlor(actor);
     }
 
     const order = Object.keys(trick.played).length;
@@ -1143,10 +1095,7 @@ export class TrucoEngine {
 
       if (s.trickIndex === 0) {
         s.envido.resolved = true;
-        if (s.ley.hiddenFlorPlayers.length === 0) {
-          s.flor.resolved = true;
-          s.ley.active = false;
-        }
+        if (!s.ley.active) s.flor.resolved = true;
       } else if (s.trickIndex === 1) {
         s.flor.resolved = true;
         s.ley.active = false;
@@ -1206,7 +1155,7 @@ export class TrucoEngine {
 
     // 1a) Flor Reservada (Perico + Perica) guardada en silencio sin haberse cantado durante la mano
     if (s.config.withFlor && s.flor.stage === "none") {
-      const reservadaHolder = s.seats.find((seat) => this.actorHasFlorReservada(seat));
+      const reservadaHolder = s.seats.find(seat => !s.ley.forfeitedBy.includes(seat) && this.actorHasFlorReservada(seat));
       if (reservadaHolder) {
         const holderTeam = getPlayerTeam(reservadaHolder);
         const pts = 5;
@@ -1258,25 +1207,13 @@ export class TrucoEngine {
           return;
         }
       } else {
-        const nFlor = this.getTeamBestFlor("nosotros");
-        const eFlor = this.getTeamBestFlor("ellos");
-
-        let florWinnerTeam: TeamId;
-        if (nFlor.isReservada !== eFlor.isReservada) {
-          florWinnerTeam = nFlor.isReservada ? "nosotros" : "ellos";
-        } else if (nFlor.points > eFlor.points) {
-          florWinnerTeam = "nosotros";
-        } else if (eFlor.points > nFlor.points) {
-          florWinnerTeam = "ellos";
-        } else {
-          const nDist = nFlor.player
-            ? getSeatDistanceFromMano(nFlor.player, s.mano, s.seats)
-            : 99;
-          const eDist = eFlor.player
-            ? getSeatDistanceFromMano(eFlor.player, s.mano, s.seats)
-            : 99;
-          florWinnerTeam = nDist <= eDist ? "nosotros" : "ellos";
-        }
+        const caller = s.flor.caller!;
+        const responder = s.flor.responder!;
+        const nosotros = getPlayerTeam(caller) === "nosotros" ? caller : responder;
+        const ellos = nosotros === caller ? responder : caller;
+        const nFlor = { ...evaluateFlor(s.initialHands[nosotros]!, s.vira), player: nosotros };
+        const eFlor = { ...evaluateFlor(s.initialHands[ellos]!, s.vira), player: ellos };
+        const florWinnerTeam = this.winsEnvite(nFlor, eFlor) ? "nosotros" : "ellos";
 
         const pts = s.flor.stakedPoints ?? 6;
         s.flor.winnerTeam = florWinnerTeam;
@@ -1374,6 +1311,7 @@ export class TrucoEngine {
           : `Envido no querido → ${this.teamLabel(s.envido.winnerTeam)} (+${s.envido.pointsAwarded})`
         : undefined;
 
+    if (s.truco.level === 4) trucoPoints = s.config.targetScore - s.scores[winnerTeam];
     const florText = s.flor.resolutionText;
 
     s.handSummary = {

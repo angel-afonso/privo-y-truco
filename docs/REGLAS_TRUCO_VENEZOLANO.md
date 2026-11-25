@@ -157,7 +157,7 @@ Si ambos equipos empatan en puntaje exacto (por ejemplo, ambos tienen `31`), **g
 > *Nota sobre Falta Envido en Malas y Buenas:* En la regla tradicional venezolana, si el equipo líder aún está en **malas** (< 12 piedras), la falta suele valer lo que le falta para llegar a 12 (entrar en buenas) o directamente lo que le falta para 24 según acuerdo de mesa. Conviene hacerlo configurable en el menú de partida.
 
 #### Regla: *"El Envido está primero"*
-Si en la primera baza el Jugador A canta **Truco** antes de que se haya disputado el Envido (y el Jugador B aún no ha tirado su primera carta), el Jugador B puede ignorar momentáneamente el Truco y responder ***"¡Envido!"*** (o ***"¡Flor!"***). Primero se resuelve el Envido/Flor y luego el Jugador B decide si quiere o no el Truco.
+Si en la primera baza el Jugador A canta **Truco** antes de que se haya disputado el Envido (y el Jugador B aún no ha tirado su primera carta), el Jugador B puede ignorar momentáneamente el Truco y responder ***"¡Envido!"*** (o ***"¡Flor!"***). En parejas, cualquiera de los dos rivales que conserve sus tres cartas puede abrir el Envido ante ese Truco. Una vez abierto, cualquiera de los compañeros puede responder por su equipo. Vale la primera respuesta válida. Luego se retoma el Truco pendiente.
 
 ---
 
@@ -183,7 +183,7 @@ Un jugador tiene Flor si cumple cualquiera de estos 3 casos:
 
 #### Declaración Obligatoria y Cantos de «A Ley» / «Con Ley» / «Sin Ley»
 - **Regla general:** Si un jugador tiene Flor, debe cantarla en su turno durante la primera baza antes de jugar su primera carta (o inmediatamente si el rival canta Envido). Si no la canta a tiempo, pierde el derecho a reclamar sus piedras.
-- **Canto «¡A Ley!» (solo la Mano):** El jugador que es **Mano** (primero en jugar en la 1.ª baza; nunca el Pie) puede declarar **«¡A Ley!»** antes de lanzar su primera carta:
+- **Canto «¡A Ley!»:** La Mano, el Trasmano y el Antepié pueden declarar **«¡A Ley!»** antes de lanzar su primera carta. La Flor Reservada sigue su regla propia: se guarda en silencio o se canta Flor.
   - **Si tiene Flor:** Posterga el anuncio de su Flor para sorprender al rival; queda **obligado a cantarla antes de jugar su 2.ª carta** (o antes de responder/cantar Truco o Envido), de lo contrario **pierde la Flor**.
   - **Si no tiene Flor:** Puede declarar «¡A Ley!» como jugada táctica (*paquete* / engaño) y jugar su carta o cantar **«¡A ley, Envido!»** (a lo que el rival sin Flor responde **«¡Sin ley, quiero!»**).
 

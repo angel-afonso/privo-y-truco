@@ -21,6 +21,74 @@ export function previewPlayerAction(state: GameState, action: PlayerAction): Gam
   };
 }
 
+export interface OptimisticFeedback {
+  bubble?: string;
+  accent?: "truco" | "flor" | "default";
+  sound?: "card" | "call" | "response";
+}
+
+export function optimisticFeedback(
+  action: RoomAction,
+  state: GameState,
+  nextLevel?: TrucoLevel,
+): OptimisticFeedback {
+  switch (action.type) {
+    case "PLAY_CARD":
+      return { sound: "card" };
+    case "CALL_TRUCO":
+      return {
+        bubble: trucoCallLabel(nextLevel ?? 1, state.phase === "AWAITING_TRUCO"),
+        accent: "truco",
+        sound: "call",
+      };
+    case "CALL_ENVIDO":
+      return {
+        bubble: envidoLabel(action.call, state.envido.chain.length > 0),
+        accent: "default",
+        sound: "call",
+      };
+    case "CALL_FLOR":
+      return { bubble: "¡FLOR!", accent: "flor", sound: "call" };
+    case "CALL_A_LEY":
+      return { bubble: "¡A LEY!", accent: "default", sound: "call" };
+    case "ASK_PRIVE":
+      return { bubble: "¿Cuánto privas?", accent: "default", sound: "call" };
+    case "DECLARE_PRIVE":
+      return { bubble: "¡Privo!", accent: "default", sound: "response" };
+    case "ANSWER_PRIVE":
+      return { sound: "response" };
+    case "RESPOND_ENVIDO":
+      return {
+        bubble: envidoResponseLabel(action.accept, state.ley.active),
+        accent: "default",
+        sound: "response",
+      };
+    case "RESPOND_TRUCO":
+      return {
+        bubble: action.accept ? "¡Quiero!" : "No quiero",
+        accent: "default",
+        sound: "response",
+      };
+    case "RESPOND_FLOR":
+      return {
+        bubble: {
+          quiero: "¡Con flor quiero!",
+          no_quiero: "No quiero",
+          achico: "Con flor no quiero",
+          contraflor: "¡Con flor envido!",
+          contraflor_resto: "¡Con flor envido la falta!",
+        }[action.choice],
+        accent: "flor",
+        sound: "response",
+      };
+    case "IRSE_AL_MAZO":
+      return { bubble: "Me voy", accent: "default", sound: "response" };
+    case "CONFIRM_REMATCH":
+    case "NEXT_HAND":
+      return {};
+  }
+}
+
 export function pendingActionLabel(action: RoomAction, state: GameState, nextLevel?: TrucoLevel): string {
   switch (action.type) {
     case "PLAY_CARD": return action.burned ? "Quemando carta…" : "Jugando carta…";

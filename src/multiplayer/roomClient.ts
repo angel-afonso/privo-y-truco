@@ -29,6 +29,7 @@ import {
 
 import type { RoomAction } from "./rematch";
 import { RealtimeInvites, redeemRealtimeInvite } from "./realtimeInvites";
+import { buildInboxTopic, computeInboxToken } from "./inboxToken";
 
 import { CHAT_LIMIT, chatText, type ChatMessage, type ChatSnapshot } from "./chat";
 
@@ -108,6 +109,7 @@ interface ServerResponse {
   seatNames?: Partial<Record<PlayerId, string>>;
   humanSeats?: PlayerId[];
   botPartnerSignal?: string | null;
+  pushed?: boolean;
 }
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -158,6 +160,7 @@ export class TrucoRoomClient {
   public stateVersion = 0;
 
   private channel: RealtimeChannel | null = null;
+  private inboxChannel: RealtimeChannel | null = null;
   private callbacks: RoomClientCallbacks;
   private chatRevision = -1;
   private chatMessages: ChatMessage[] = [];
@@ -166,6 +169,7 @@ export class TrucoRoomClient {
   private serverAvailableCache: boolean | null = null;
   private onlineClientIds = new Set<string>();
   private serverPollTimer: ReturnType<typeof setInterval> | null = null;
+  private visibilityHandler: (() => void) | null = null;
 
   constructor(callbacks: RoomClientCallbacks) {
     const id = getOrCreateTabIdentity();
@@ -184,6 +188,21 @@ export class TrucoRoomClient {
     if (!cid) return false;
     if (cid === this.clientId) return true;
     return this.onlineClientIds.has(cid);
+  }
+
+  /**
+   * En modo servidor, elige un único cliente coordinador (el host si está conectado,
+   * o el primer miembro humano en línea) para disparar `bot_step` sin colisiones.
+   */
+  public isPrimaryBotDriver(): boolean {
+    if (this.isHost) return true;
+    const onlineHumans = this.members.filter(
+      (m) => m.seat !== null && (m.clientId === this.clientId || m.online !== false),
+    );
+    if (!onlineHumans.length) return true;
+    const hostOnline = onlineHumans.find((m) => m.isHost);
+    if (hostOnline) return hostOnline.clientId === this.clientId;
+    return onlineHumans[0].clientId === this.clientId;
   }
 
   public getSavedSession(): PersistedRoomSession | null {
@@ -397,19 +416,69 @@ export class TrucoRoomClient {
     this.inMatch = res.status === "playing" || res.status === "finished";
 
     if (this.roomCode) {
-      await this.connectRealtimeChannel(this.roomCode, this.isHost, this.mySeat, false);
+      await Promise.all([
+        this.connectRealtimeChannel(this.roomCode, this.isHost, this.mySeat, false),
+        this.connectServerInboxChannel(this.roomCode),
+      ]);
     }
     this.applyServerResponse(res);
     this.persistSession(this.inMatch);
-    if (!this.inMatch) void this.sendBroadcast("server_ping", {});
+    if (!this.inMatch && !res.pushed) void this.sendBroadcast("server_ping", {});
 
-    // Heartbeat discreto para mantener `last_seen` vivo y detectar cambios perdidos
+    // Red de seguridad discreta (25s) solo con pestaña activa; las actualizaciones llegan por push directo
     this.clearServerPoll();
     this.serverPollTimer = setInterval(() => {
-      if (this.backendMode === "server" && this.roomCode) {
+      if (this.backendMode === "server" && this.roomCode && (typeof document === "undefined" || !document.hidden)) {
         void this.refreshServerView();
       }
-    }, 6000);
+    }, 25_000);
+    if (typeof document !== "undefined") {
+      this.visibilityHandler = () => {
+        if (!document.hidden && this.backendMode === "server" && this.roomCode) {
+          void this.refreshServerView();
+        }
+      };
+      document.addEventListener("visibilitychange", this.visibilityHandler);
+    }
+  }
+
+  private async connectServerInboxChannel(roomCode: string): Promise<void> {
+    if (!supabase) return;
+    if (this.inboxChannel) {
+      await supabase.removeChannel(this.inboxChannel).catch(() => {});
+      this.inboxChannel = null;
+    }
+    const token = await computeInboxToken(roomCode, this.clientId, this.playerSecret);
+    if (this.roomCode !== roomCode) return;
+    const inbox = supabase.channel(buildInboxTopic(roomCode, token), {
+      config: { broadcast: { self: false } },
+    });
+    this.inboxChannel = inbox;
+    inbox.on("broadcast", { event: "server_view" }, ({ payload }) => {
+      if (inbox !== this.inboxChannel || this.backendMode !== "server" || !payload) return;
+      this.applyServerResponse(payload as ServerResponse);
+    });
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      }, 4000);
+      inbox.subscribe((status) => {
+        if (status === "SUBSCRIBED" || status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          clearTimeout(timer);
+          if (!settled) {
+            settled = true;
+            resolve();
+          } else if (status === "SUBSCRIBED" && inbox === this.inboxChannel && this.backendMode === "server") {
+            // Al reconectar el canal privado, recuperar cualquier evento perdido
+            void this.refreshServerView();
+          }
+        }
+      });
+    });
   }
 
   private applyServerResponse(res: ServerResponse): void {
@@ -473,7 +542,9 @@ export class TrucoRoomClient {
     const res = await this.invokeServer({ op: "bot_step", roomCode: this.roomCode, expectedVersion });
     if (res?.ok && channel === this.channel) {
       this.applyServerResponse(res);
-      if (res.version !== expectedVersion) await this.sendBroadcast("server_ping", { version: res.version });
+      if (res.version !== expectedVersion && !res.pushed) {
+        await this.sendBroadcast("server_ping", { version: res.version });
+      }
     }
   }
 
@@ -502,6 +573,11 @@ export class TrucoRoomClient {
       this.syncPresenceState();
     });
 
+    channel.on("broadcast", { event: "chat_snapshot" }, ({ payload }) => {
+      if (channel === this.channel && this.backendMode === "server" && payload?.chat) {
+        this.applyChat(payload.chat as ChatSnapshot);
+      }
+    });
     channel.on("broadcast", { event: "chat_changed" }, () => {
       if (channel === this.channel && this.backendMode === "server") void this.refreshChat();
     });
@@ -515,9 +591,11 @@ export class TrucoRoomClient {
       }
     });
 
-    // Ping ligero en modo `server`: cero cartas en el WebSocket, cada cliente pide su vista sanitizada
-    channel.on("broadcast", { event: "server_ping" }, () => {
+    // Fallback de ping en modo `server`: ignora versiones ya recibidas por push directo
+    channel.on("broadcast", { event: "server_ping" }, ({ payload }) => {
       if (this.backendMode === "server") {
+        const version = typeof payload?.version === "number" ? payload.version : undefined;
+        if (version !== undefined && version <= this.stateVersion) return;
         void this.refreshServerView();
       }
     });
@@ -591,7 +669,10 @@ export class TrucoRoomClient {
           clearTimeout(timer);
           await this.trackSelf();
           if (channel !== this.channel) return;
-          if (this.backendMode === "server") void this.refreshChat();
+          if (this.backendMode === "server") {
+            void this.refreshChat();
+            if (settled) void this.refreshServerView();
+          }
           if (this.backendMode === "realtime") {
             if (this.isHost) {
               if (!this.inMatch) this.realtimeInvites?.open(roomCode, () =>
@@ -711,7 +792,7 @@ export class TrucoRoomClient {
       if (res?.ok) {
         this.applyServerResponse(res);
         await this.trackSelf();
-        await this.sendBroadcast("server_ping", { version: res.version });
+        if (!res.pushed) await this.sendBroadcast("server_ping", { version: res.version });
         this.persistSession(this.inMatch);
         return true;
       }
@@ -741,7 +822,7 @@ export class TrucoRoomClient {
       });
       if (res?.ok) {
         this.applyServerResponse(res);
-        await this.sendBroadcast("server_ping", { version: res.version });
+        if (!res.pushed) await this.sendBroadcast("server_ping", { version: res.version });
       }
       return;
     }
@@ -755,7 +836,7 @@ export class TrucoRoomClient {
     const res = await this.invokeServer({ op: "start_match", roomCode: this.roomCode });
     if (res?.ok) {
       this.applyServerResponse(res);
-      await this.sendBroadcast("server_ping", { version: res.version });
+      if (!res.pushed) await this.sendBroadcast("server_ping", { version: res.version });
       return true;
     }
     return false;
@@ -876,7 +957,7 @@ export class TrucoRoomClient {
         if (channel !== this.channel) return false;
         if (res?.ok && res.viewState) {
           this.applyServerResponse(res);
-          void this.sendBroadcast("server_ping", { version: res.version });
+          if (!res.pushed) void this.sendBroadcast("server_ping", { version: res.version });
           return true;
         }
         if (res?.httpStatus !== 409 || i + 1 === attempts) return false;
@@ -921,7 +1002,7 @@ export class TrucoRoomClient {
       const res = await this.invokeServer({ op: "send_chat", roomCode: this.roomCode, id, text });
       if (channel !== this.channel || !res?.ok || !res.chat) return false;
       this.applyChat(res.chat);
-      void this.sendBroadcast("chat_changed", {});
+      if (!res.pushed) void this.sendBroadcast("chat_changed", {});
     } else {
       if (channel.state !== "joined") return false;
       const sent = await this.sendBroadcast("chat_message", { id, clientId: this.clientId, text });
@@ -956,6 +1037,10 @@ export class TrucoRoomClient {
       clearInterval(this.serverPollTimer);
       this.serverPollTimer = null;
     }
+    if (this.visibilityHandler && typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
   }
 
   public async leaveRoom(clearSaved = true): Promise<void> {
@@ -966,11 +1051,20 @@ export class TrucoRoomClient {
     const departure = this.backendMode === "server" && prevCode && clearSaved
       ? this.invokeServer({ op: "leave_room", roomCode: prevCode }) : null;
     const channel = this.channel;
+    const inbox = this.inboxChannel;
     this.channel = null;
+    this.inboxChannel = null;
     this.chatMessages = [];
     this.chatRevision = -1;
     this.roomCode = null;
     this.visibility = "private";
+    if (inbox && supabase) {
+      try {
+        await supabase.removeChannel(inbox);
+      } catch {
+        // Ignorar errores de cierre en desconexión
+      }
+    }
     if (channel && supabase) {
       try {
         if (departure && (await departure)?.ok) {

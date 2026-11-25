@@ -18,6 +18,7 @@ import {
   mapSeatToViewer,
   projectSeatRecordForViewer,
 } from "../../../src/multiplayer/perspective.ts";
+import { buildInboxTopic, computeInboxToken } from "../../../src/multiplayer/inboxToken.ts";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -27,6 +28,47 @@ const CORS_HEADERS = {
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const DISCONNECT_BOT_TAKEOVER_MS = 14_000;
+const LAST_SEEN_THROTTLE_MS = 5_000;
+
+interface RealtimeBroadcastMessage {
+  topic: string;
+  event: string;
+  payload: unknown;
+  private: boolean;
+}
+
+function runInBackground(task: Promise<unknown>): void {
+  const safe = task.catch(() => {});
+  const runtime = (globalThis as unknown as {
+    EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void };
+  }).EdgeRuntime;
+  if (runtime?.waitUntil) {
+    runtime.waitUntil(safe);
+  }
+}
+
+async function sendRealtimeBroadcastBatch(
+  supabaseUrl: string,
+  serviceKey: string,
+  messages: RealtimeBroadcastMessage[],
+): Promise<boolean> {
+  if (!messages.length) return true;
+  try {
+    const res = await fetch(`${supabaseUrl}/realtime/v1/api/broadcast`, {
+      method: "POST",
+      headers: {
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ messages }),
+    });
+    await res.body?.cancel();
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 interface RoomRow {
   invite_code: string;
@@ -64,7 +106,12 @@ function generateRoomCode(): string {
   return code;
 }
 
-function buildClientPayload(room: RoomRow, players: PlayerRow[], caller: PlayerRow | null) {
+function buildClientPayload(
+  room: RoomRow,
+  players: PlayerRow[],
+  caller: PlayerRow | null,
+  pushed = false,
+) {
   const safeMembers = players.map((p) => ({
     clientId: p.client_id,
     name: p.name,
@@ -121,7 +168,31 @@ function buildClientPayload(room: RoomRow, players: PlayerRow[], caller: PlayerR
     seatNames: projectedSeatNames,
     humanSeats: projectedHumanSeats,
     botPartnerSignal,
+    ...(pushed ? { pushed: true } : {}),
   };
+}
+
+async function pushRoomStateToOthers(
+  supabaseUrl: string,
+  serviceKey: string,
+  room: RoomRow,
+  players: PlayerRow[],
+  excludeClientId?: string,
+): Promise<boolean> {
+  const recipients = players.filter((p) => p.client_id !== excludeClientId);
+  if (!recipients.length) return true;
+  const messages = await Promise.all(
+    recipients.map(async (recipient): Promise<RealtimeBroadcastMessage> => {
+      const token = await computeInboxToken(room.code, recipient.client_id, recipient.player_secret);
+      return {
+        topic: buildInboxTopic(room.code, token),
+        event: "server_view",
+        payload: buildClientPayload(room, players, recipient, true),
+        private: false,
+      };
+    }),
+  );
+  return sendRealtimeBroadcastBatch(supabaseUrl, serviceKey, messages);
 }
 
 Deno.serve(async (req) => {
@@ -234,7 +305,15 @@ Deno.serve(async (req) => {
         return jsonResponse({ ok: false, error: forbidden ? "Solo los jugadores de la sala pueden entrar al chat." :
           "No se pudo conectar con el chat." }, forbidden ? 403 : 503);
       }
-      return jsonResponse({ ok: true, chat: data });
+      if (sending) {
+        runInBackground(sendRealtimeBroadcastBatch(supabaseUrl, serviceKey, [{
+          topic: `truco-room:${roomCode}`,
+          event: "chat_snapshot",
+          payload: { chat: data },
+          private: false,
+        }]));
+      }
+      return jsonResponse({ ok: true, chat: data, ...(sending ? { pushed: true } : {}) });
     }
 
     if (op === "join_room") {
@@ -274,14 +353,18 @@ Deno.serve(async (req) => {
         if (caller.player_secret !== playerSecret) {
           return jsonResponse({ ok: false, error: "Token de sesión inválido para reconectar." }, 403);
         }
-        await db
-          .from("truco_room_players")
-          .update({ last_seen: new Date().toISOString(), name: name || caller.name })
-          .eq("room_code", roomCode)
-          .eq("client_id", clientId);
-        caller = { ...caller, last_seen: new Date().toISOString(), name: name || caller.name };
+        const nowIso = new Date().toISOString();
+        runInBackground(
+          db
+            .from("truco_room_players")
+            .update({ last_seen: nowIso, name: name || caller.name })
+            .eq("room_code", roomCode)
+            .eq("client_id", clientId),
+        );
+        caller = { ...caller, last_seen: nowIso, name: name || caller.name };
         players = players.map((p) => (p.client_id === clientId ? caller! : p));
-        return jsonResponse(buildClientPayload(room, players, caller));
+        runInBackground(pushRoomStateToOthers(supabaseUrl, serviceKey, room, players, clientId));
+        return jsonResponse(buildClientPayload(room, players, caller, true));
       }
 
       if (op === "reconnect") {
@@ -297,7 +380,8 @@ Deno.serve(async (req) => {
         const { data: members, error: membersErr } = await db.from("truco_room_players")
           .select("*").eq("room_code", roomCode).order("joined_at").returns<PlayerRow[]>();
         if (membersErr || !members) return jsonResponse({ ok: false, error: "No se pudo cargar la mesa." }, 503);
-        return jsonResponse(buildClientPayload(room, members, members.find(p => p.client_id === clientId) ?? null));
+        runInBackground(pushRoomStateToOthers(supabaseUrl, serviceKey, room, members, clientId));
+        return jsonResponse(buildClientPayload(room, members, members.find(p => p.client_id === clientId) ?? null, true));
       }
 
       return jsonResponse({ ok: false, error: "La invitación ya no está disponible." }, 409);
@@ -308,12 +392,16 @@ Deno.serve(async (req) => {
       return jsonResponse({ ok: false, error: "No autorizado en esta sala." }, 403);
     }
 
-    // Actualizar heartbeat `last_seen`
-    await db
-      .from("truco_room_players")
-      .update({ last_seen: new Date().toISOString() })
-      .eq("room_code", roomCode)
-      .eq("client_id", clientId);
+    // Actualizar heartbeat `last_seen` en segundo plano (sin bloquear la jugada)
+    if (Date.now() - Date.parse(caller.last_seen) >= LAST_SEEN_THROTTLE_MS) {
+      runInBackground(
+        db
+          .from("truco_room_players")
+          .update({ last_seen: new Date().toISOString() })
+          .eq("room_code", roomCode)
+          .eq("client_id", clientId),
+      );
+    }
 
     // 3) OBTENER VISTA SANITIZADA (ANTI-TRAMPA)
     if (op === "get_view") {
@@ -344,7 +432,8 @@ Deno.serve(async (req) => {
       players = players.map((p) => (p.client_id === clientId ? caller! : p));
       await db.from("truco_rooms").update({ version: room.version + 1 }).eq("code", roomCode);
       room.version += 1;
-      return jsonResponse(buildClientPayload(room, players, caller));
+      runInBackground(pushRoomStateToOthers(supabaseUrl, serviceKey, room, players, clientId));
+      return jsonResponse(buildClientPayload(room, players, caller, true));
     }
 
     // 5) ACTUALIZAR CONFIGURACIÓN (SOLO HOST EN LOBBY)
@@ -376,7 +465,8 @@ Deno.serve(async (req) => {
         .from("truco_rooms")
         .update({ config, version: room.version })
         .eq("code", roomCode);
-      return jsonResponse(buildClientPayload(room, players, caller));
+      runInBackground(pushRoomStateToOthers(supabaseUrl, serviceKey, room, players, clientId));
+      return jsonResponse(buildClientPayload(room, players, caller, true));
     }
 
     // 6) INICIAR PARTIDA (SOLO HOST)
@@ -405,7 +495,9 @@ Deno.serve(async (req) => {
         .eq("code", current.code).eq("version", current.version).select("version").maybeSingle();
       if (error) return jsonResponse({ ok: false, error: error.message }, 500);
       if (!data) return jsonResponse({ ok: false, error: "La partida ya avanzó." }, 409);
-      return jsonResponse(buildClientPayload({ ...current, ...changes }, players, caller));
+      const updatedRoom: RoomRow = { ...current, ...changes };
+      runInBackground(pushRoomStateToOthers(supabaseUrl, serviceKey, updatedRoom, players, clientId));
+      return jsonResponse(buildClientPayload(updatedRoom, players, caller, true));
     }
 
     // 7) ACCIÓN DE JUGADOR (VALIDADA EN SERVIDOR)
